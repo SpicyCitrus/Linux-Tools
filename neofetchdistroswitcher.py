@@ -26,13 +26,15 @@ SUPPORTED_OS = {
     "Ubuntu-GNOME", "Xubuntu", "Studio", "Budgie", "Void", "Zorin",
     "Bitrig", "DragonFly BSD", "FreeBSD", "NetBSD", "OpenBSD",
     "Solaris", "IRIX", "MINIX", "Haiku", "GNU Hurd", "FreeMiNT",
-    "Android", "iOS", "iPadOS", "CYGWIN", "MINGW", "MSYS2",
+    "Android", "iPadOS", "CYGWIN", "MINGW", "MSYS2",
     "Windows 10 Linux Subsystem", "MacOS", "OS X", "AIX", "DosFetch",
     "MySysInf"
 }
 
+
 def find_config():
     return Path.home() / ".config" / "neofetch" / "config.conf"
+
 
 def preview_logo(os_name):
     try:
@@ -45,6 +47,7 @@ def preview_logo(os_name):
         print("\nError: neofetch was not found.")
         print("Make sure neofetch is installed and available in your PATH.")
         return False
+
 
 def save_logo(os_name):
     config_file = find_config()
@@ -76,7 +79,7 @@ def save_logo(os_name):
 
     if changes == 0:
         print("\nError: Could not find the ascii_distro setting.")
-        print('Make sure your config contains:')
+        print("Make sure your config contains:")
         print('ascii_distro="auto"')
         return
 
@@ -90,6 +93,7 @@ def save_logo(os_name):
     print(f'\nNeofetch logo changed to "{os_name}".')
     print("Backup created at:")
     print(f"  {backup_file}")
+
 
 def show_os_list():
     os_list = list(SUPPORTED_OS)
@@ -113,12 +117,16 @@ def show_os_list():
 
     print()
 
+
 def main():
     print("Made with ❤️ by Cozy")
     print()
     print("Neofetch Logo Switcher")
     print("----------------------")
-    print('Type "list" to see supported operating systems.')
+
+    show_os_list()
+
+    print("Enter the name of the operating system you want to use.")
     print()
 
     while True:
@@ -128,18 +136,17 @@ def main():
             print("Please enter an operating system.\n")
             continue
 
-        if os_name.lower() == "list":
-            show_os_list()
-            continue
-
         matched_os = next(
-            (name for name in SUPPORTED_OS if name.lower() == os_name.lower()),
+            (
+                name for name in SUPPORTED_OS
+                if name.lower() == os_name.lower()
+            ),
             None
         )
 
         if matched_os is None:
             print(f'\n"{os_name}" is not in the supported OS list.')
-            print('Type "list" to see all supported operating systems.\n')
+            print("Please choose one of the operating systems listed above.\n")
             continue
 
         print(f'\nPreviewing "{matched_os}"...\n')
@@ -164,7 +171,7 @@ def main():
         else:
             print('\nPlease type "yes" or "no".\n')
 
+
 if __name__ == "__main__":
     main()
-
 #little editor note. some of the icons just are tux idk why i just grabbed a list off of google and i tested most of the them and it works ALSO this only works correctly if you use neofetch not fastfetch this also works best with neofetch auto running with fish but its not needed
