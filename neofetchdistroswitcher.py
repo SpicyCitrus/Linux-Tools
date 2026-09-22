@@ -167,4 +167,4 @@ def main():
 if __name__ == "__main__":
     main()
 
-#little editor note i have no clue if this works or not i didnt test it
+#little editor note. some of the icons just are tux idk why i just grabbed a list off of google and i tested most of the them and it works ALSO this only works correctly if you use neofetch not fastfetch this also works best with neofetch auto running with fish but its not needed
