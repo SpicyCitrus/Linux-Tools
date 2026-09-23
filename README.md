@@ -26,3 +26,5 @@ tools i use, tools i made
 
 # fix's
 > if you want features or have a problem just make a issue
+
+> If LTM's config becomes curropted just delete it and rerun LTM 
