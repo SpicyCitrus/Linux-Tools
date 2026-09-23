@@ -1,7 +1,7 @@
-import json
 import os
 import platform
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -13,15 +13,20 @@ from pathlib import Path
 
 IP_API_URL = "https://ipinfo.io/json"
 SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=10000000"
+UPLOAD_TEST_URL = "https://speed.cloudflare.com/__up"
 
 MONITOR_INTERVAL = 5
 SPEED_TEST_BYTES = 10_000_000
+UPLOAD_TEST_BYTES = 2_000_000
 
 APP_NAME = "Internet Safety Monitor"
 
 
 def clear_screen():
-    os.system("clear")
+    if os.name == "nt":
+        os.system("cls")
+    else:
+        os.system("clear")
 
 
 def get_terminal_width():
@@ -54,9 +59,7 @@ def get_json(url, timeout=10):
         request,
         timeout=timeout
     ) as response:
-        return json.loads(
-            response.read().decode("utf-8")
-        )
+        return response.read().decode("utf-8")
 
 
 def get_public_ip_info():
@@ -65,6 +68,10 @@ def get_public_ip_info():
             IP_API_URL,
             timeout=10
         )
+
+        import json
+
+        data = json.loads(data)
 
         return {
             "ip": data.get("ip", "Unknown"),
@@ -265,11 +272,11 @@ def test_download_speed():
 
 def test_upload_speed():
     data = os.urandom(
-        2 * 1024 * 1024
+        UPLOAD_TEST_BYTES
     )
 
     request = urllib.request.Request(
-        "https://speed.cloudflare.com/__up",
+        UPLOAD_TEST_URL,
         data=data,
         method="POST",
         headers={
@@ -304,6 +311,7 @@ def test_upload_speed():
 def run_speed_test():
     print("Running speed test...")
     print()
+
     print("Testing latency...")
 
     latency = test_latency()
@@ -316,6 +324,7 @@ def run_speed_test():
         )
 
     print()
+
     print("Testing download speed...")
 
     download = test_download_speed()
@@ -328,6 +337,7 @@ def run_speed_test():
         )
 
     print()
+
     print("Testing upload speed...")
 
     upload = test_upload_speed()
@@ -670,7 +680,6 @@ def print_vpn_information(info):
         print(
             "Status     : POSSIBLE VPN / PROXY"
         )
-
     else:
         print(
             "Status     : NOT DETECTED"
@@ -695,7 +704,6 @@ def print_connections():
     print(
         "ACTIVE INTERNET CONNECTIONS"
     )
-
     print("-" * 60)
 
     if not connections:
@@ -1114,4 +1122,4 @@ if __name__ == "__main__":
         )
 
         sys.exit(130)
-        # not tested
+# not tested
