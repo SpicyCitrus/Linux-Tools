@@ -1,3 +1,7 @@
+# Linux-Tool-Manager
+> easy way to update and grab all the tools i make for you and me
+
+
 # Linux-Tools
 tools i use, tools i made
 
