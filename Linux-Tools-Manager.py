@@ -576,9 +576,9 @@ def main():
 if __name__ == "__main__":
 
 
-#note i have not tested this
     try:
         sys.exit(main())
     except KeyboardInterrupt:
         print("\n\nOperation cancelled.")
         sys.exit(130)
+#note i have not tested this
