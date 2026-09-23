@@ -581,4 +581,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\nOperation cancelled.")
         sys.exit(130)
-#note i have not tested this
+#note this tools only works if the names match with the repo so please dont rename any of the files it downloads or updates also if you are using any tool before this released you have to redownload everything otherwise it wont reconise the other tools
