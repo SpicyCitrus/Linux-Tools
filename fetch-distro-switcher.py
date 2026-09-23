@@ -560,4 +560,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # not really tested
