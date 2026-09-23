@@ -5,3 +5,6 @@ tools i use, tools i made
 
 
 > you can use it but just dont steal code
+
+# Little note
+> most of not everything here requires python or some other lang and if theres extra dependencies then they will be listed if not listed then assume they dont need anything besides the lang
