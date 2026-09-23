@@ -2,20 +2,14 @@ import json
 import os
 import platform
 import re
-import shutil
 import socket
 import subprocess
 import sys
-import threading
 import time
-import urllib.error
-import urllib.parse
 import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
-
-VERSION = "1.0.0"
 
 IP_API_URL = "https://ipinfo.io/json"
 SPEED_TEST_URL = "https://speed.cloudflare.com/__down?bytes=10000000"
@@ -41,10 +35,9 @@ def print_header():
     width = get_terminal_width()
 
     print("=" * width)
-    print("Internet Safety Monitor".center(width))
+    print(APP_NAME.center(width))
     print("=" * width)
     print("Made with ❤️ by Cozy".center(width))
-    print(f"Version {VERSION}".center(width))
     print("=" * width)
     print()
 
@@ -117,11 +110,6 @@ def get_public_ip_info():
             "timezone": "Unknown",
             "error": str(error)
         }
-
-
-def get_ip_address():
-    info = get_public_ip_info()
-    return info.get("ip", "Unavailable")
 
 
 def detect_vpn(info):
@@ -209,10 +197,12 @@ def test_latency():
         try:
             start = time.perf_counter()
 
-            socket.create_connection(
+            connection = socket.create_connection(
                 (target, 443),
                 timeout=3
-            ).close()
+            )
+
+            connection.close()
 
             elapsed = (
                 time.perf_counter() - start
@@ -439,7 +429,7 @@ def get_process_connections():
             continue
 
         process_match = re.search(
-            r'pid=(\d+)',
+            r"pid=(\d+)",
             line
         )
 
@@ -535,17 +525,6 @@ def resolve_host(host):
 
 
 def get_network_usage():
-    """
-    Read per-process network byte counters
-    from /proc when available.
-
-    Linux does not expose historical per-process
-    network usage in a simple universal interface,
-    so this function uses interface counters as
-    a fallback and active connection ownership
-    when possible.
-    """
-
     usage = defaultdict(
         lambda: {
             "connections": 0,
@@ -644,12 +623,21 @@ def format_bytes(value):
     return f"{value / (1024 ** 4):.2f} TB"
 
 
+def print_alert(message):
+    print()
+    print("!" * 60)
+    print(f"ALERT: {message}")
+    print("!" * 60)
+    print()
+
+
 def print_ip_information(info):
     print("PUBLIC IP")
     print("-" * 60)
 
     print(
-        f"IP Address : {info.get('ip', 'Unknown')}"
+        f"IP Address : "
+        f"{info.get('ip', 'Unknown')}"
     )
 
     print(
@@ -689,11 +677,13 @@ def print_vpn_information(info):
         )
 
     print(
-        f"Confidence : {vpn['confidence']}"
+        f"Confidence : "
+        f"{vpn['confidence']}"
     )
 
     print(
-        f"Details    : {vpn['reason']}"
+        f"Details    : "
+        f"{vpn['reason']}"
     )
 
     print()
@@ -702,28 +692,33 @@ def print_vpn_information(info):
 def print_connections():
     connections = get_process_connections()
 
-    print("ACTIVE INTERNET CONNECTIONS")
+    print(
+        "ACTIVE INTERNET CONNECTIONS"
+    )
+
     print("-" * 60)
 
     if not connections:
         print(
             "No active connections found."
         )
+
         print(
             "Try running the monitor with sudo "
             "for more process information."
         )
+
         print()
         return
 
-    grouped = defaultdict(
-        list
-    )
+    grouped = defaultdict(list)
 
     for connection in connections:
         grouped[
             connection["process"]
-        ].append(connection)
+        ].append(
+            connection
+        )
 
     for process, process_connections in sorted(
         grouped.items(),
@@ -734,7 +729,8 @@ def print_connections():
     ):
         print(
             f"{process}: "
-            f"{len(process_connections)} connection(s)"
+            f"{len(process_connections)} "
+            f"connection(s)"
         )
 
         displayed = set()
@@ -765,7 +761,8 @@ def print_connections():
             displayed.add(key)
 
             print(
-                f"  {connection['state']:<12} "
+                f"  "
+                f"{connection['state']:<12} "
                 f"{display_host}"
             )
 
@@ -783,6 +780,7 @@ def print_usage():
             "No process-level network activity "
             "could be determined."
         )
+
         print()
         return
 
@@ -818,16 +816,23 @@ def print_usage():
         print()
 
 
-def print_traffic(rx, tx, previous_rx, previous_tx):
+def print_traffic(
+    rx,
+    tx,
+    previous_rx,
+    previous_tx
+):
     print("TRAFFIC")
     print("-" * 60)
 
     print(
-        f"Total download : {format_bytes(rx)}"
+        f"Total download : "
+        f"{format_bytes(rx)}"
     )
 
     print(
-        f"Total upload   : {format_bytes(tx)}"
+        f"Total upload   : "
+        f"{format_bytes(tx)}"
     )
 
     if previous_rx is not None:
@@ -850,16 +855,9 @@ def print_traffic(rx, tx, previous_rx, previous_tx):
     print()
 
 
-def print_alert(message):
-    print()
-    print("!" * 60)
-    print(f"ALERT: {message}")
-    print("!" * 60)
-    print()
-
-
 def monitor():
     info = get_public_ip_info()
+
     current_ip = info.get(
         "ip",
         "Unavailable"
@@ -889,12 +887,9 @@ def monitor():
             )
 
             if (
-                previous_ip
-                != "Unavailable"
-                and current_ip
-                != "Unavailable"
-                and current_ip
-                != previous_ip
+                previous_ip != "Unavailable"
+                and current_ip != "Unavailable"
+                and current_ip != previous_ip
             ):
                 print_alert(
                     f"Public IP changed!\n"
@@ -926,22 +921,19 @@ def monitor():
 
             if (
                 last_speed_test is None
-                or time.time() - last_speed_test
-                >= 300
+                or time.time() - last_speed_test >= 300
             ):
-                print(
-                    "SPEED TEST"
-                )
+                print("SPEED TEST")
                 print("-" * 60)
 
-                speed_results = run_speed_test()
+                speed_results = (
+                    run_speed_test()
+                )
 
                 last_speed_test = time.time()
 
             else:
-                print(
-                    "SPEED TEST"
-                )
+                print("SPEED TEST")
                 print("-" * 60)
 
                 if speed_results:
@@ -991,6 +983,7 @@ def monitor():
 
                 print()
 
+            print_connections()
             print_usage()
 
             print(
@@ -1026,6 +1019,7 @@ def show_once():
     print(
         "Collecting network information..."
     )
+
     print()
 
     info = get_public_ip_info()
@@ -1050,13 +1044,6 @@ def show_once():
 
 
 def main():
-    if platform.system().lower() != "linux":
-        print(
-            "Warning: This tool is designed "
-            "for Linux."
-        )
-        print()
-
     while True:
         clear_screen()
         print_header()
@@ -1127,4 +1114,4 @@ if __name__ == "__main__":
         )
 
         sys.exit(130)
-      # not tested
+        # not tested
