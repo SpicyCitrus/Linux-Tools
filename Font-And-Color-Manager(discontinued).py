@@ -1152,4 +1152,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\nOperation cancelled.")
         sys.exit(130)
-      # not tested dont go after me if this nukes your DE
+      # this works system wide but if theres anything overriding the default system font it wont work for that app
