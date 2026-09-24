@@ -2,20 +2,30 @@ import argparse
 import configparser
 import datetime
 import json
+import os
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
 APP_NAME = "Cozy Theme Tool"
 BRAND = "Made with ❤️ by Cozy"
+BACKUP_FORMAT = 2
 
+HOME = Path.home()
 SCRIPT_DIR = Path(__file__).resolve().parent
 BACKUP_DIR = SCRIPT_DIR
-HOME = Path.home()
 
 GTK3_SETTINGS = HOME / ".config" / "gtk-3.0" / "settings.ini"
 GTK4_SETTINGS = HOME / ".config" / "gtk-4.0" / "settings.ini"
 CURSOR_INDEX = HOME / ".icons" / "default" / "index.theme"
+
+MANAGED_FILES = (
+    GTK3_SETTINGS,
+    GTK4_SETTINGS,
+    CURSOR_INDEX,
+)
 
 
 class Colors:
@@ -32,6 +42,7 @@ class Colors:
 def color(text, value):
     if not sys.stdout.isatty():
         return text
+
     return f"{value}{text}{Colors.RESET}"
 
 
@@ -94,7 +105,7 @@ def ensure_backup_directory():
         BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         return True
     except OSError as exc:
-        error(f"Cannot access script directory: {exc}")
+        error(f"Cannot create backup directory: {exc}")
         return False
 
 
@@ -106,6 +117,40 @@ def read_text(path):
     except OSError as exc:
         error(f"Could not read {path}: {exc}")
         return None
+
+
+def atomic_write_text(path, content):
+    ensure_parent(path)
+
+    temp_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as file:
+            temp_path = Path(file.name)
+            file.write(content)
+            file.flush()
+            os.fsync(file.fileno())
+
+        os.replace(temp_path, path)
+        return True
+
+    except OSError as exc:
+        error(f"Could not write {path}: {exc}")
+
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        return False
 
 
 def get_ini_value(path, section, key):
@@ -142,16 +187,82 @@ def set_ini_values(path, values):
         parser.set(section, key, value)
 
     try:
-        ensure_parent(path)
-
-        with path.open("w", encoding="utf-8") as file:
+        with tempfile.TemporaryFile(
+            mode="w+",
+            encoding="utf-8",
+        ) as file:
             parser.write(file)
+            file.seek(0)
+            output = file.read()
 
-        return True
+        return atomic_write_text(path, output)
 
-    except OSError as exc:
-        error(f"Could not write {path}: {exc}")
+    except (OSError, configparser.Error) as exc:
+        error(f"Could not prepare {path}: {exc}")
         return False
+
+
+def discover_fonts():
+    try:
+        result = subprocess.run(
+            [
+                "fc-list",
+                ":",
+                "family",
+                "-f",
+                "%{family}\\n",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        )
+    except (
+        FileNotFoundError,
+        subprocess.SubprocessError,
+        OSError,
+    ):
+        return []
+
+    fonts = set()
+
+    for line in result.stdout.splitlines():
+        for family in line.split(","):
+            family = family.strip()
+
+            if family:
+                fonts.add(family)
+
+    return sorted(fonts, key=str.casefold)
+
+
+def get_current_font():
+    for settings in (GTK3_SETTINGS, GTK4_SETTINGS):
+        value = get_ini_value(
+            settings,
+            "Settings",
+            "gtk-font-name",
+        )
+
+        if value:
+            return value
+
+    return None
+
+
+def set_font(font):
+    values = {
+        ("Settings", "gtk-font-name"): font,
+    }
+
+    results = []
+
+    for settings in (GTK3_SETTINGS, GTK4_SETTINGS):
+        results.append(
+            set_ini_values(settings, values)
+        )
+
+    return all(results)
 
 
 def get_current_cursor_theme():
@@ -159,7 +270,7 @@ def get_current_cursor_theme():
         value = get_ini_value(
             settings,
             "Settings",
-            "gtk-cursor-theme-name"
+            "gtk-cursor-theme-name",
         )
 
         if value:
@@ -183,30 +294,31 @@ def get_current_cursor_theme():
 
 def set_cursor_theme(theme):
     values = {
-        ("Settings", "gtk-cursor-theme-name"): theme
+        ("Settings", "gtk-cursor-theme-name"): theme,
     }
 
-    changed = False
+    results = []
 
     for settings in (GTK3_SETTINGS, GTK4_SETTINGS):
-        if set_ini_values(settings, values):
-            changed = True
-
-    try:
-        ensure_parent(CURSOR_INDEX)
-
-        CURSOR_INDEX.write_text(
-            "[Icon Theme]\n"
-            f"Inherits={theme}\n",
-            encoding="utf-8"
+        results.append(
+            set_ini_values(settings, values)
         )
 
-        changed = True
+    try:
+        content = (
+            "[Icon Theme]\n"
+            f"Inherits={theme}\n"
+        )
 
+        cursor_ok = atomic_write_text(
+            CURSOR_INDEX,
+            content,
+        )
     except OSError as exc:
         error(f"Could not configure cursor theme: {exc}")
+        cursor_ok = False
 
-    return changed
+    return all(results) and cursor_ok
 
 
 def get_current_icon_theme():
@@ -214,7 +326,7 @@ def get_current_icon_theme():
         value = get_ini_value(
             settings,
             "Settings",
-            "gtk-icon-theme"
+            "gtk-icon-theme",
         )
 
         if value:
@@ -225,16 +337,17 @@ def get_current_icon_theme():
 
 def set_icon_theme(theme):
     values = {
-        ("Settings", "gtk-icon-theme"): theme
+        ("Settings", "gtk-icon-theme"): theme,
     }
 
-    changed = False
+    results = []
 
     for settings in (GTK3_SETTINGS, GTK4_SETTINGS):
-        if set_ini_values(settings, values):
-            changed = True
+        results.append(
+            set_ini_values(settings, values)
+        )
 
-    return changed
+    return all(results)
 
 
 def theme_directories():
@@ -267,7 +380,7 @@ def discover_icon_themes():
         except (OSError, PermissionError):
             continue
 
-    return sorted(themes, key=str.lower)
+    return sorted(themes, key=str.casefold)
 
 
 def discover_cursor_themes():
@@ -284,13 +397,16 @@ def discover_cursor_themes():
 
                 cursor_directory = child / "cursors"
 
-                if cursor_directory.exists() and cursor_directory.is_dir():
+                if (
+                    cursor_directory.exists()
+                    and cursor_directory.is_dir()
+                ):
                     themes.add(child.name)
 
         except (OSError, PermissionError):
             continue
 
-    return sorted(themes, key=str.lower)
+    return sorted(themes, key=str.casefold)
 
 
 def timestamp():
@@ -303,30 +419,33 @@ def backup_filename():
     return BACKUP_DIR / f"cozy-backup-{timestamp()}.backup"
 
 
+def normalized_managed_path(path):
+    try:
+        return path.expanduser().resolve()
+    except OSError:
+        return path.expanduser().absolute()
+
+
 def create_backup():
     if not ensure_backup_directory():
         return None
 
-    backup_path = backup_filename()
-
     snapshot = {
-        "format": 1,
-        "created": datetime.datetime.now().isoformat(),
+        "format": BACKUP_FORMAT,
+        "created": datetime.datetime.now().astimezone().isoformat(),
         "tool": APP_NAME,
         "brand": BRAND,
-        "files": {}
+        "files": {},
     }
 
-    paths = [
-        GTK3_SETTINGS,
-        GTK4_SETTINGS,
-        CURSOR_INDEX,
-    ]
-
-    for path in paths:
-        key = str(path)
+    for path in MANAGED_FILES:
+        key = str(normalized_managed_path(path))
 
         if path.exists():
+            if not path.is_file():
+                error(f"Cannot back up non-file path: {path}")
+                return None
+
             content = read_text(path)
 
             if content is None:
@@ -335,27 +454,32 @@ def create_backup():
 
             snapshot["files"][key] = {
                 "exists": True,
-                "content": content
+                "content": content,
             }
         else:
             snapshot["files"][key] = {
                 "exists": False,
-                "content": None
+                "content": None,
             }
 
+    backup_path = backup_filename()
+
     try:
-        backup_path.write_text(
-            json.dumps(
-                snapshot,
-                indent=2,
-                ensure_ascii=False
-            ),
-            encoding="utf-8"
+        serialized = json.dumps(
+            snapshot,
+            indent=2,
+            ensure_ascii=False,
         )
+
+        if not atomic_write_text(
+            backup_path,
+            serialized,
+        ):
+            return None
 
         return backup_path
 
-    except OSError as exc:
+    except (OSError, TypeError, ValueError) as exc:
         error(f"Could not create backup: {exc}")
         return None
 
@@ -367,12 +491,16 @@ def automatic_backup():
     backup = create_backup()
 
     if backup:
-        success(f"Automatic backup created: {backup.name}")
+        success(
+            f"Automatic backup created: {backup.name}"
+        )
         return True
 
     warning("The automatic backup failed.")
     print()
-    print("Changes cannot safely continue without a backup.")
+    print(
+        "Changes cannot safely continue without a backup."
+    )
     print()
 
     if not ask_confirmation(
@@ -387,33 +515,61 @@ def automatic_backup():
     manual_backup = create_backup()
 
     if manual_backup:
-        success(f"Manual backup created: {manual_backup.name}")
+        success(
+            f"Manual backup created: {manual_backup.name}"
+        )
         return True
 
     error("Manual backup also failed.")
     print()
 
     if ask_confirmation("Continue WITHOUT a backup?"):
-        warning("You chose to continue without a backup.")
+        warning(
+            "You chose to continue without a backup."
+        )
         return True
 
     error("Changes cancelled.")
     return False
 
 
-def list_backups():
-    backups = sorted(
-        BACKUP_DIR.glob("*.backup"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True
+def get_backups():
+    if not BACKUP_DIR.exists():
+        return []
+
+    try:
+        backups = list(BACKUP_DIR.glob("*.backup"))
+    except OSError:
+        return []
+
+    def modification_time(path):
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0
+
+    return sorted(
+        backups,
+        key=modification_time,
+        reverse=True,
     )
 
+
+def list_backups():
+    if not ensure_backup_directory():
+        return
+
+    backups = get_backups()
+
     if not backups:
-        print("No .backup files found in the script directory.")
+        print("No .backup files found.")
+        print(f"Backup directory: {BACKUP_DIR}")
         return
 
     print()
     print(color("Available backups:", Colors.BOLD))
+    print()
+    print(f"  Location: {BACKUP_DIR}")
     print()
 
     for index, path in enumerate(backups, 1):
@@ -424,16 +580,12 @@ def list_backups():
 
         print(
             f"  {index:2}. {path.name} "
-            f"({size} bytes)"
+            f"({size:,} bytes)"
         )
 
 
 def find_backup(identifier):
-    backups = sorted(
-        BACKUP_DIR.glob("*.backup"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True
-    )
+    backups = get_backups()
 
     if not backups:
         return None
@@ -446,16 +598,129 @@ def find_backup(identifier):
 
         return None
 
-    candidate = BACKUP_DIR / identifier
+    candidate = BACKUP_DIR / Path(identifier).name
 
     if (
         candidate.exists()
         and candidate.is_file()
         and candidate.suffix == ".backup"
+        and candidate.parent == BACKUP_DIR
     ):
         return candidate
 
     return None
+
+
+def load_backup(path):
+    try:
+        raw = path.read_text(encoding="utf-8")
+        data = json.loads(raw)
+
+    except (
+        OSError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        error(f"Could not read backup: {exc}")
+        return None
+
+    if not isinstance(data, dict):
+        error("Backup is not a valid object.")
+        return None
+
+    if data.get("format") not in (1, BACKUP_FORMAT):
+        error(
+            "Unsupported backup format: "
+            f"{data.get('format')}"
+        )
+        return None
+
+    files = data.get("files")
+
+    if not isinstance(files, dict):
+        error("Backup is missing its file data.")
+        return None
+
+    allowed = {
+        str(normalized_managed_path(path))
+        for path in MANAGED_FILES
+    }
+
+    for filename in files:
+        try:
+            normalized = str(
+                normalized_managed_path(Path(filename))
+            )
+        except OSError:
+            error(f"Invalid backup path: {filename}")
+            return None
+
+        if normalized not in allowed:
+            error(
+                "Backup contains an unmanaged file: "
+                f"{filename}"
+            )
+            return None
+
+    return data
+
+
+def restore_snapshot(data):
+    files = data["files"]
+
+    for path in MANAGED_FILES:
+        filename = str(
+            normalized_managed_path(path)
+        )
+
+        file_data = files.get(filename)
+
+        if file_data is None:
+            for old_filename, candidate in files.items():
+                try:
+                    if (
+                        normalized_managed_path(
+                            Path(old_filename)
+                        )
+                        == normalized_managed_path(path)
+                    ):
+                        file_data = candidate
+                        break
+                except OSError:
+                    continue
+
+        if file_data is None:
+            continue
+
+        if not isinstance(file_data, dict):
+            raise ValueError(
+                f"Invalid file record for {path}"
+            )
+
+        exists = file_data.get("exists", False)
+
+        if exists:
+            content = file_data.get("content")
+
+            if not isinstance(content, str):
+                raise ValueError(
+                    f"Invalid content for {path}"
+                )
+
+            if not atomic_write_text(path, content):
+                raise OSError(
+                    f"Could not restore {path}"
+                )
+
+        elif path.exists():
+            if not path.is_file():
+                raise OSError(
+                    f"Cannot remove non-file path: {path}"
+                )
+
+            path.unlink()
+
+    return True
 
 
 def restore_backup(identifier):
@@ -465,26 +730,15 @@ def restore_backup(identifier):
         error("Backup not found.")
         return False
 
-    try:
-        data = json.loads(
-            path.read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError) as exc:
-        error(f"Could not read backup: {exc}")
-        return False
+    data = load_backup(path)
 
-    if data.get("format") != 1:
-        error("Unsupported backup format.")
-        return False
-
-    files = data.get("files")
-
-    if not isinstance(files, dict):
-        error("Backup is missing its file data.")
+    if data is None:
         return False
 
     print()
-    info("Creating safety backup before restoring...")
+    info(
+        "Creating safety backup before restoring..."
+    )
 
     safety_backup = create_backup()
 
@@ -514,38 +768,17 @@ def restore_backup(identifier):
             )
         else:
             success(
-                f"Manual safety backup created: "
+                "Manual safety backup created: "
                 f"{safety_backup.name}"
             )
     else:
         success(
-            f"Safety backup created: "
+            "Safety backup created: "
             f"{safety_backup.name}"
         )
 
     try:
-        for filename, file_data in files.items():
-            target = Path(filename)
-
-            exists = file_data.get("exists", False)
-            content = file_data.get("content")
-
-            if exists:
-                if not isinstance(content, str):
-                    raise ValueError(
-                        f"Invalid content for {filename}"
-                    )
-
-                ensure_parent(target)
-
-                target.write_text(
-                    content,
-                    encoding="utf-8"
-                )
-
-            elif target.exists():
-                target.unlink()
-
+        restore_snapshot(data)
         success(f"Restored: {path.name}")
         return True
 
@@ -553,10 +786,14 @@ def restore_backup(identifier):
         error(f"Restore failed: {exc}")
 
         if safety_backup:
-            error(
-                f"Your safety backup is available as "
-                f"{safety_backup.name}"
+            print()
+            warning(
+                "The restore may have been partially applied."
             )
+            info(
+                "Your pre-restore backup is:"
+            )
+            print(f"  {safety_backup.name}")
 
         return False
 
@@ -581,10 +818,25 @@ def delete_backup(identifier):
 def show_current():
     cursor = get_current_cursor_theme()
     icons = get_current_icon_theme()
+    font = get_current_font()
 
     print()
-    print(color("Current theme configuration", Colors.BOLD))
+    print(
+        color(
+            "Current theme configuration",
+            Colors.BOLD,
+        )
+    )
     print()
+
+    print(
+        "  Font         : "
+        + (
+            font
+            if font
+            else color("not configured", Colors.DIM)
+        )
+    )
 
     print(
         "  Cursor theme : "
@@ -605,25 +857,25 @@ def show_current():
     )
 
 
-def choose_theme(themes, title):
+def choose_item(items, title, prompt):
     print()
     print(color(title, Colors.BOLD))
     print()
 
-    if not themes:
-        warning("No installed themes were found.")
+    if not items:
+        warning("Nothing was found.")
         return None
 
-    for index, theme in enumerate(themes, 1):
-        print(f"  {index:2}. {theme}")
+    for index, item in enumerate(items, 1):
+        print(f"  {index:3}. {item}")
 
     print()
-    print("   0. Cancel")
+    print("    0. Cancel")
     print()
 
     while True:
         try:
-            choice = input("Select a theme: ").strip()
+            choice = input(prompt).strip()
 
         except KeyboardInterrupt:
             print()
@@ -635,10 +887,79 @@ def choose_theme(themes, title):
         if choice.isdigit():
             number = int(choice)
 
-            if 1 <= number <= len(themes):
-                return themes[number - 1]
+            if 1 <= number <= len(items):
+                return items[number - 1]
 
         print("Please enter a valid number.")
+
+
+def choose_theme(themes, title):
+    return choose_item(
+        themes,
+        title,
+        "Select a theme: ",
+    )
+
+
+def change_font_interactive():
+    fonts = discover_fonts()
+
+    if not fonts:
+        warning(
+            "Could not find installed fonts using fc-list."
+        )
+        print()
+        print(
+            'Use: python cozy_theme.py set --font "Noto Sans 11"'
+        )
+        return
+
+    font_family = choose_item(
+        fonts,
+        "Installed font families",
+        "Select a font: ",
+    )
+
+    if not font_family:
+        return
+
+    print()
+
+    try:
+        size = input("Font size [11]: ").strip()
+    except KeyboardInterrupt:
+        print()
+        return
+
+    if not size:
+        size = "11"
+
+    if not size.isdigit() or int(size) <= 0:
+        error("Font size must be a positive whole number.")
+        return
+
+    font = f"{font_family} {size}"
+
+    print()
+    print(f"Selected font: {font}")
+
+    if not ask_confirmation("Apply this font?"):
+        info("Change cancelled.")
+        return
+
+    if not automatic_backup():
+        return
+
+    if set_font(font):
+        success(
+            f"Application font changed to: {font}"
+        )
+        info(
+            "Restart GTK applications for the change "
+            "to appear."
+        )
+    else:
+        error("Application font could not be changed.")
 
 
 def change_cursor_interactive():
@@ -646,7 +967,7 @@ def change_cursor_interactive():
 
     theme = choose_theme(
         themes,
-        "Installed cursor themes"
+        "Installed cursor themes",
     )
 
     if not theme:
@@ -663,8 +984,8 @@ def change_cursor_interactive():
             f"Cursor theme changed to: {theme}"
         )
         info(
-            "You may need to restart applications "
-            "for the change to appear."
+            "Restart applications or log in again if "
+            "the change does not appear immediately."
         )
     else:
         error("Cursor theme could not be changed.")
@@ -675,7 +996,7 @@ def change_icon_interactive():
 
     theme = choose_theme(
         themes,
-        "Installed application icon themes"
+        "Installed application icon themes",
     )
 
     if not theme:
@@ -689,11 +1010,12 @@ def change_icon_interactive():
 
     if set_icon_theme(theme):
         success(
-            f"Application icon theme changed to: {theme}"
+            "Application icon theme changed to: "
+            f"{theme}"
         )
         info(
-            "You may need to restart applications "
-            "for the change to appear."
+            "Restart applications for the change "
+            "to appear."
         )
     else:
         error(
@@ -701,38 +1023,74 @@ def change_icon_interactive():
         )
 
 
-def change_both_interactive():
-    cursor_themes = discover_cursor_themes()
+def change_all_interactive():
+    fonts = discover_fonts()
+    cursors = discover_cursor_themes()
+    icons = discover_icon_themes()
+
+    font_family = choose_item(
+        fonts,
+        "Installed font families",
+        "Select a font: ",
+    )
+
+    if not font_family:
+        return
+
+    try:
+        size = input("Font size [11]: ").strip()
+    except KeyboardInterrupt:
+        print()
+        return
+
+    if not size:
+        size = "11"
+
+    if not size.isdigit() or int(size) <= 0:
+        error("Font size must be a positive whole number.")
+        return
 
     cursor = choose_theme(
-        cursor_themes,
-        "Installed cursor themes"
+        cursors,
+        "Installed cursor themes",
     )
 
     if not cursor:
         return
 
-    icon_themes = discover_icon_themes()
-
-    icons = choose_theme(
-        icon_themes,
-        "Installed application icon themes"
+    icons_selected = choose_theme(
+        icons,
+        "Installed application icon themes",
     )
 
-    if not icons:
+    if not icons_selected:
         return
 
+    font = f"{font_family} {size}"
+
     print()
-    print(f"Selected cursor theme: {cursor}")
-    print(f"Selected icon theme: {icons}")
+    print(f"Selected font   : {font}")
+    print(f"Selected cursor : {cursor}")
+    print(f"Selected icons  : {icons_selected}")
+    print()
+
+    if not ask_confirmation("Apply all changes?"):
+        info("Changes cancelled.")
+        return
 
     if not automatic_backup():
         return
 
+    font_ok = set_font(font)
     cursor_ok = set_cursor_theme(cursor)
-    icon_ok = set_icon_theme(icons)
+    icon_ok = set_icon_theme(icons_selected)
 
     print()
+
+    if font_ok:
+        success(f"Font changed to: {font}")
+    else:
+        error("Font could not be changed.")
 
     if cursor_ok:
         success(
@@ -743,28 +1101,25 @@ def change_both_interactive():
 
     if icon_ok:
         success(
-            f"Application icon theme changed to: {icons}"
+            "Application icon theme changed to: "
+            f"{icons_selected}"
         )
     else:
         error(
             "Application icon theme could not be changed."
         )
 
-    if cursor_ok or icon_ok:
+    if font_ok or cursor_ok or icon_ok:
         info(
-            "You may need to restart applications "
-            "for changes to appear."
+            "Restart GTK applications for all changes "
+            "to appear."
         )
 
 
 def restore_interactive():
     list_backups()
 
-    backups = sorted(
-        BACKUP_DIR.glob("*.backup"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True
-    )
+    backups = get_backups()
 
     if not backups:
         return
@@ -789,6 +1144,9 @@ def restore_interactive():
 
 def delete_backup_interactive():
     list_backups()
+
+    if not get_backups():
+        return
 
     print()
 
@@ -828,12 +1186,13 @@ def menu():
         print()
         print(color("Menu", Colors.BOLD))
         print()
-        print("  1. Change cursor/mouse theme")
-        print("  2. Change application icon theme")
-        print("  3. Change both")
-        print("  4. Restore backup")
-        print("  5. List backups")
-        print("  6. Delete backup")
+        print("  1. Change application font")
+        print("  2. Change cursor/mouse theme")
+        print("  3. Change application icon theme")
+        print("  4. Change font, cursor and icons")
+        print("  5. Restore backup")
+        print("  6. List backups")
+        print("  7. Delete backup")
         print("  0. Exit")
         print()
 
@@ -845,26 +1204,30 @@ def menu():
             return
 
         if choice == "1":
-            change_cursor_interactive()
+            change_font_interactive()
             pause()
 
         elif choice == "2":
-            change_icon_interactive()
+            change_cursor_interactive()
             pause()
 
         elif choice == "3":
-            change_both_interactive()
+            change_icon_interactive()
             pause()
 
         elif choice == "4":
-            restore_interactive()
+            change_all_interactive()
             pause()
 
         elif choice == "5":
-            list_backups()
+            restore_interactive()
             pause()
 
         elif choice == "6":
+            list_backups()
+            pause()
+
+        elif choice == "7":
             delete_backup_interactive()
             pause()
 
@@ -898,12 +1261,59 @@ def command_list_themes(theme_type):
         print(f"  {theme}")
 
 
+def command_list_fonts():
+    fonts = discover_fonts()
+
+    print(color("Installed font families:", Colors.BOLD))
+    print()
+
+    if not fonts:
+        print("  No fonts found.")
+        print(
+            "  Make sure fontconfig/fc-list is installed."
+        )
+        return
+
+    for font in fonts:
+        print(f"  {font}")
+
+
 def command_set(args):
-    if not args.cursor and not args.icons:
+    if (
+        not args.cursor
+        and not args.icons
+        and not args.font
+    ):
         error(
-            "Specify --cursor, --icons, or both."
+            "Specify --font, --cursor, --icons, "
+            "or any combination."
         )
         return 1
+
+    changes = []
+
+    if args.font:
+        changes.append(f"font '{args.font}'")
+
+    if args.cursor:
+        changes.append(
+            f"cursor theme '{args.cursor}'"
+        )
+
+    if args.icons:
+        changes.append(
+            f"icon theme '{args.icons}'"
+        )
+
+    if args.font:
+        print(
+            color(
+                "Requested GTK font:",
+                Colors.BOLD,
+            )
+        )
+        print(f"  {args.font}")
+        print()
 
     if args.cursor:
         themes = discover_cursor_themes()
@@ -911,7 +1321,7 @@ def command_set(args):
         print(
             color(
                 "Installed cursor themes:",
-                Colors.BOLD
+                Colors.BOLD,
             )
         )
         print()
@@ -924,19 +1334,13 @@ def command_set(args):
 
         print()
 
-        if not ask_confirmation(
-            f"Set cursor theme to '{args.cursor}'?"
-        ):
-            info("Change cancelled.")
-            return 0
-
     if args.icons:
         themes = discover_icon_themes()
 
         print(
             color(
                 "Installed application icon themes:",
-                Colors.BOLD
+                Colors.BOLD,
             )
         )
         print()
@@ -951,16 +1355,25 @@ def command_set(args):
 
         print()
 
-        if not ask_confirmation(
-            f"Set application icon theme to '{args.icons}'?"
-        ):
-            info("Change cancelled.")
-            return 0
+    if not ask_confirmation(
+        "Apply " + ", ".join(changes) + "?"
+    ):
+        info("Changes cancelled.")
+        return 0
 
     if not automatic_backup():
         return 1
 
     success_count = 0
+
+    if args.font:
+        if set_font(args.font):
+            success(
+                f"Font set to: {args.font}"
+            )
+            success_count += 1
+        else:
+            error("Font could not be changed.")
 
     if args.cursor:
         if set_cursor_theme(args.cursor):
@@ -976,7 +1389,7 @@ def command_set(args):
     if args.icons:
         if set_icon_theme(args.icons):
             success(
-                f"Application icon theme set to: "
+                "Application icon theme set to: "
                 f"{args.icons}"
             )
             success_count += 1
@@ -987,8 +1400,8 @@ def command_set(args):
 
     if success_count:
         info(
-            "You may need to restart applications "
-            "for changes to appear."
+            "Restart GTK applications for changes "
+            "to appear."
         )
 
     return 0 if success_count else 1
@@ -997,8 +1410,8 @@ def command_set(args):
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
-            "Cozy Theme Tool - change Linux cursor and "
-            "application icon themes."
+            "Cozy Theme Tool - configure Linux GTK fonts, "
+            "cursor themes and application icon themes."
         )
     )
 
@@ -1008,65 +1421,81 @@ def build_parser():
 
     set_parser = subparsers.add_parser(
         "set",
-        help="Change cursor and/or icon theme"
+        help=(
+            "Change GTK font, cursor and/or icon theme"
+        ),
+    )
+
+    set_parser.add_argument(
+        "--font",
+        metavar="FONT",
+        help=(
+            'Set the GTK application font, e.g. '
+            '"Noto Sans 11"'
+        ),
     )
 
     set_parser.add_argument(
         "--cursor",
         metavar="THEME",
-        help="Set the cursor/mouse theme"
+        help="Set the cursor/mouse theme",
     )
 
     set_parser.add_argument(
         "--icons",
         metavar="THEME",
-        help="Set the application icon theme"
+        help="Set the application icon theme",
     )
 
     subparsers.add_parser(
         "current",
-        help="Show current theme configuration"
+        help="Show current theme configuration",
     )
 
     themes_parser = subparsers.add_parser(
         "themes",
-        help="List installed themes"
+        help="List installed themes",
     )
 
     themes_parser.add_argument(
         "type",
         choices=["cursor", "icons"],
-        help="Theme type to list"
+        help="Theme type to list",
+    )
+
+    subparsers.add_parser(
+        "fonts",
+        help="List installed font families",
     )
 
     subparsers.add_parser(
         "backups",
-        help="List .backup files"
+        help="List backups",
     )
 
     restore_parser = subparsers.add_parser(
         "restore",
-        help="Restore a .backup file"
+        help="Restore a backup",
     )
 
     restore_parser.add_argument(
         "backup",
-        help="Backup filename or number"
+        help="Backup filename or number",
     )
 
     delete_parser = subparsers.add_parser(
         "delete-backup",
-        help="Delete a backup"
+        help="Delete a backup",
     )
 
     delete_parser.add_argument(
         "backup",
-        help="Backup filename or number"
+        help="Backup filename or number",
     )
 
     subparsers.add_parser(
         "menu",
-        help="Open the interactive menu"
+        help="Open the interactive menu",
     )
 
     return parser
@@ -1090,6 +1519,10 @@ def main():
         print()
         return 0
 
+    if args.command == "fonts":
+        command_list_fonts()
+        return 0
+
     if args.command == "themes":
         command_list_themes(args.type)
         return 0
@@ -1099,10 +1532,18 @@ def main():
         return 0
 
     if args.command == "restore":
-        return 0 if restore_backup(args.backup) else 1
+        return (
+            0
+            if restore_backup(args.backup)
+            else 1
+        )
 
     if args.command == "delete-backup":
-        return 0 if delete_backup(args.backup) else 1
+        return (
+            0
+            if delete_backup(args.backup)
+            else 1
+        )
 
     if args.command == "set":
         return command_set(args)
