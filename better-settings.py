@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 
-APP_NAME = "Cozy Linux Settings"
+APP_NAME = "Cozy Settings"
 BRAND = "Made with ❤️ by Cozy"
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -18,9 +18,12 @@ HOME = Path.home()
 
 GTK3_SETTINGS = HOME / ".config" / "gtk-3.0" / "settings.ini"
 GTK4_SETTINGS = HOME / ".config" / "gtk-4.0" / "settings.ini"
+GTK2_SETTINGS = HOME / ".gtkrc-2.0"
 CURSOR_INDEX = HOME / ".icons" / "default" / "index.theme"
-XFCE_XSETTINGS = "xsettings"
-KDE_CONFIG = HOME / ".config" / "kdeglobals"
+KDE_GLOBALS = HOME / ".config" / "kdeglobals"
+KDE_KDEGLOBALS = HOME / ".config" / "kdeglobals"
+XFCE_XSETTINGS = HOME / ".config" / "xfce4" / "xfconf" / "xfce-perchannel-xml" / "xsettings.xml"
+XFCE_XFWM = HOME / ".config" / "xfce4" / "xfconf" / "xfce-perchannel-xml" / "xfwm4.xml"
 
 
 class Colors:
@@ -59,7 +62,7 @@ def warning(message):
 def banner():
     print()
     print(color("╔══════════════════════════════════════════════╗", Colors.MAGENTA))
-    print(color("║             COZY LINUX SETTINGS              ║", Colors.MAGENTA))
+    print(color("║                COZY SETTINGS                 ║", Colors.MAGENTA))
     print(color("╚══════════════════════════════════════════════╝", Colors.MAGENTA))
     print()
     print(color(BRAND, Colors.DIM))
@@ -94,7 +97,7 @@ def command_exists(command):
     return shutil.which(command) is not None
 
 
-def run_command(command, timeout=10):
+def run_command(command, timeout=15):
     try:
         result = subprocess.run(
             command,
@@ -105,7 +108,11 @@ def run_command(command, timeout=10):
             check=False
         )
 
-        return result.returncode, result.stdout.strip(), result.stderr.strip()
+        return (
+            result.returncode,
+            result.stdout.strip(),
+            result.stderr.strip()
+        )
 
     except (OSError, subprocess.SubprocessError):
         return 1, "", ""
@@ -140,17 +147,17 @@ def detect_desktop():
     session = os.environ.get("DESKTOP_SESSION", "")
     desktop_text = f"{desktop}:{session}".lower()
 
-    if "gnome" in desktop_text:
-        return "GNOME"
-
     if "kde" in desktop_text or "plasma" in desktop_text:
         return "KDE Plasma"
 
-    if "xfce" in desktop_text:
-        return "XFCE"
+    if "gnome" in desktop_text:
+        return "GNOME"
 
     if "cinnamon" in desktop_text:
         return "Cinnamon"
+
+    if "xfce" in desktop_text:
+        return "XFCE"
 
     if "mate" in desktop_text:
         return "MATE"
@@ -164,17 +171,17 @@ def detect_desktop():
     if "budgie" in desktop_text:
         return "Budgie"
 
-    if command_exists("gnome-shell"):
-        return "GNOME"
-
     if command_exists("plasmashell"):
         return "KDE Plasma"
 
-    if command_exists("xfce4-session"):
-        return "XFCE"
+    if command_exists("gnome-shell"):
+        return "GNOME"
 
     if command_exists("cinnamon-session"):
         return "Cinnamon"
+
+    if command_exists("xfce4-session"):
+        return "XFCE"
 
     if command_exists("mate-session"):
         return "MATE"
@@ -185,7 +192,7 @@ def detect_desktop():
     return "Generic Linux"
 
 
-def get_session_type():
+def session_type():
     return os.environ.get("XDG_SESSION_TYPE", "unknown")
 
 
@@ -193,7 +200,9 @@ def get_ini_value(path, section, key):
     if not path.exists():
         return None
 
-    parser = configparser.ConfigParser()
+    parser = configparser.ConfigParser(
+        interpolation=None
+    )
 
     try:
         parser.read(path, encoding="utf-8")
@@ -207,7 +216,9 @@ def get_ini_value(path, section, key):
 
 
 def set_ini_value(path, section, key, value):
-    parser = configparser.ConfigParser()
+    parser = configparser.ConfigParser(
+        interpolation=None
+    )
 
     if path.exists():
         try:
@@ -264,33 +275,31 @@ def gsettings_set(schema, key, value):
     return True
 
 
-def kde_command():
-    if command_exists("kwriteconfig6"):
-        return "kwriteconfig6"
+def gsettings_schema_exists(schema):
+    if not command_exists("gsettings"):
+        return False
 
-    if command_exists("kwriteconfig5"):
-        return "kwriteconfig5"
+    code, output, _ = run_command(
+        ["gsettings", "list-keys", schema]
+    )
 
-    return None
+    return code == 0 and bool(output)
 
 
 def kde_read(group, key):
-    command = kde_command()
+    command = None
+
+    if command_exists("kreadconfig6"):
+        command = "kreadconfig6"
+    elif command_exists("kreadconfig5"):
+        command = "kreadconfig5"
 
     if not command:
         return None
 
-    if command == "kwriteconfig6":
-        read_command = "kreadconfig6"
-    else:
-        read_command = "kreadconfig5"
-
-    if not command_exists(read_command):
-        return None
-
     code, output, _ = run_command(
         [
-            read_command,
+            command,
             "--file",
             "kdeglobals",
             "--group",
@@ -307,7 +316,12 @@ def kde_read(group, key):
 
 
 def kde_write(group, key, value):
-    command = kde_command()
+    command = None
+
+    if command_exists("kwriteconfig6"):
+        command = "kwriteconfig6"
+    elif command_exists("kwriteconfig5"):
+        command = "kwriteconfig5"
 
     if not command:
         return False
@@ -377,719 +391,6 @@ def xfce_set(channel, property_name, value):
     return True
 
 
-def get_gtk_font():
-    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
-        value = get_ini_value(
-            path,
-            "Settings",
-            "gtk-font-name"
-        )
-
-        if value:
-            return value
-
-    return None
-
-
-def set_gtk_font(font):
-    values = {
-        "gtk-font-name": font
-    }
-
-    changed = False
-
-    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
-        if set_ini_value(
-            path,
-            "Settings",
-            "gtk-font-name",
-            values["gtk-font-name"]
-        ):
-            changed = True
-
-    return changed
-
-
-def get_gtk_theme():
-    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
-        value = get_ini_value(
-            path,
-            "Settings",
-            "gtk-theme-name"
-        )
-
-        if value:
-            return value
-
-    return None
-
-
-def set_gtk_theme(theme):
-    changed = False
-
-    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
-        if set_ini_value(
-            path,
-            "Settings",
-            "gtk-theme-name",
-            theme
-        ):
-            changed = True
-
-    return changed
-
-
-def get_icon_theme():
-    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
-        value = get_ini_value(
-            path,
-            "Settings",
-            "gtk-icon-theme"
-        )
-
-        if value:
-            return value
-
-    return None
-
-
-def set_icon_theme(theme):
-    changed = False
-
-    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
-        if set_ini_value(
-            path,
-            "Settings",
-            "gtk-icon-theme",
-            theme
-        ):
-            changed = True
-
-    return changed
-
-
-def get_cursor_theme():
-    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
-        value = get_ini_value(
-            path,
-            "Settings",
-            "gtk-cursor-theme-name"
-        )
-
-        if value:
-            return value
-
-    if CURSOR_INDEX.exists():
-        content = read_text(CURSOR_INDEX)
-
-        if content:
-            for line in content.splitlines():
-                line = line.strip()
-
-                if line.lower().startswith("inherits="):
-                    return line.split("=", 1)[1].strip()
-
-    return None
-
-
-def set_cursor_theme(theme):
-    changed = False
-
-    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
-        if set_ini_value(
-            path,
-            "Settings",
-            "gtk-cursor-theme-name",
-            theme
-        ):
-            changed = True
-
-    if write_text(
-        CURSOR_INDEX,
-        "[Icon Theme]\n"
-        f"Inherits={theme}\n"
-    ):
-        changed = True
-
-    return changed
-
-
-def discover_theme_directories():
-    return [
-        HOME / ".themes",
-        HOME / ".icons",
-        HOME / ".local" / "share" / "themes",
-        HOME / ".local" / "share" / "icons",
-        Path("/usr/share/themes"),
-        Path("/usr/share/icons"),
-        Path("/usr/local/share/themes"),
-        Path("/usr/local/share/icons")
-    ]
-
-
-def discover_gtk_themes():
-    themes = set()
-
-    for directory in discover_theme_directories():
-        if not directory.exists() or not directory.is_dir():
-            continue
-
-        try:
-            for child in directory.iterdir():
-                if not child.is_dir():
-                    continue
-
-                if (child / "gtk-3.0").exists():
-                    themes.add(child.name)
-
-                elif (child / "gtk-4.0").exists():
-                    themes.add(child.name)
-
-        except (OSError, PermissionError):
-            continue
-
-    return sorted(themes, key=str.lower)
-
-
-def discover_icon_themes():
-    themes = set()
-
-    for directory in discover_theme_directories():
-        if not directory.exists() or not directory.is_dir():
-            continue
-
-        try:
-            for child in directory.iterdir():
-                if child.is_dir() and (child / "index.theme").exists():
-                    themes.add(child.name)
-
-        except (OSError, PermissionError):
-            continue
-
-    return sorted(themes, key=str.lower)
-
-
-def discover_cursor_themes():
-    themes = set()
-
-    for directory in discover_theme_directories():
-        if not directory.exists() or not directory.is_dir():
-            continue
-
-        try:
-            for child in directory.iterdir():
-                if not child.is_dir():
-                    continue
-
-                if (child / "cursors").is_dir():
-                    themes.add(child.name)
-
-        except (OSError, PermissionError):
-            continue
-
-    return sorted(themes, key=str.lower)
-
-
-def discover_fonts():
-    directories = [
-        HOME / ".fonts",
-        HOME / ".local" / "share" / "fonts",
-        Path("/usr/share/fonts"),
-        Path("/usr/local/share/fonts")
-    ]
-
-    fonts = set()
-
-    for directory in directories:
-        if not directory.exists() or not directory.is_dir():
-            continue
-
-        try:
-            for path in directory.rglob("*"):
-                if not path.is_file():
-                    continue
-
-                if path.suffix.lower() not in (
-                    ".ttf",
-                    ".otf",
-                    ".ttc"
-                ):
-                    continue
-
-                name = path.stem.replace("-", " ").replace("_", " ")
-                fonts.add(name)
-
-        except (OSError, PermissionError):
-            continue
-
-    return sorted(fonts, key=str.lower)
-
-
-def backup_filename():
-    now = datetime.datetime.now().strftime(
-        "%Y%m%d-%H%M%S-%f"
-    )
-
-    return BACKUP_DIR / f"cozy-backup-{now}.backup"
-
-
-def backup_paths():
-    return [
-        GTK3_SETTINGS,
-        GTK4_SETTINGS,
-        CURSOR_INDEX,
-        KDE_CONFIG,
-        HOME / ".config" / "xfce4" / "xfconf" / "xfce-perchannel-xml" / "xsettings.xml",
-        HOME / ".config" / "xfce4" / "xfconf" / "xfce-perchannel-xml" / "xfwm4.xml"
-    ]
-
-
-def create_backup():
-    backup_path = backup_filename()
-
-    snapshot = {
-        "format": 2,
-        "created": datetime.datetime.now().isoformat(),
-        "tool": APP_NAME,
-        "brand": BRAND,
-        "desktop": detect_desktop(),
-        "files": {},
-        "gsettings": {},
-        "kde": {},
-        "xfce": {}
-    }
-
-    for path in backup_paths():
-        key = str(path)
-
-        if path.exists():
-            content = read_text(path)
-
-            if content is None:
-                return None
-
-            snapshot["files"][key] = {
-                "exists": True,
-                "content": content
-            }
-        else:
-            snapshot["files"][key] = {
-                "exists": False,
-                "content": None
-            }
-
-    gsettings_keys = [
-        (
-            "org.gnome.desktop.interface",
-            "font-name"
-        ),
-        (
-            "org.gnome.desktop.interface",
-            "gtk-theme"
-        ),
-        (
-            "org.gnome.desktop.interface",
-            "icon-theme"
-        ),
-        (
-            "org.gnome.desktop.interface",
-            "cursor-theme"
-        ),
-        (
-            "org.gnome.desktop.interface",
-            "color-scheme"
-        ),
-        (
-            "org.gnome.desktop.interface",
-            "text-scaling-factor"
-        ),
-        (
-            "org.cinnamon.desktop.interface",
-            "font-name"
-        ),
-        (
-            "org.cinnamon.desktop.interface",
-            "gtk-theme"
-        ),
-        (
-            "org.cinnamon.desktop.interface",
-            "icon-theme"
-        ),
-        (
-            "org.cinnamon.desktop.interface",
-            "cursor-theme"
-        ),
-        (
-            "org.mate.interface",
-            "font-name"
-        ),
-        (
-            "org.mate.interface",
-            "gtk-theme"
-        ),
-        (
-            "org.mate.interface",
-            "icon-theme"
-        ),
-        (
-            "org.mate.peripherals-mouse",
-            "cursor-theme"
-        )
-    ]
-
-    for schema, key in gsettings_keys:
-        value = gsettings_get(schema, key)
-
-        if value is not None:
-            snapshot["gsettings"][f"{schema}|{key}"] = value
-
-    kde_values = [
-        ("General", "ColorScheme"),
-        ("General", "font"),
-        ("Icons", "Theme"),
-        ("KDE", "widgetStyle")
-    ]
-
-    for group, key in kde_values:
-        value = kde_read(group, key)
-
-        if value is not None:
-            snapshot["kde"][f"{group}|{key}"] = value
-
-    xfce_values = [
-        ("xsettings", "/Gtk/FontName"),
-        ("xsettings", "/Net/ThemeName"),
-        ("xsettings", "/Net/IconThemeName"),
-        ("xsettings", "/Gtk/CursorThemeName"),
-        ("xsettings", "/Gtk/CursorThemeSize"),
-        ("xsettings", "/Xft/DPI")
-    ]
-
-    for channel, key in xfce_values:
-        value = xfce_get(channel, key)
-
-        if value is not None:
-            snapshot["xfce"][f"{channel}|{key}"] = value
-
-    try:
-        ensure_parent(backup_path)
-
-        backup_path.write_text(
-            json.dumps(
-                snapshot,
-                indent=2,
-                ensure_ascii=False
-            ),
-            encoding="utf-8"
-        )
-
-        return backup_path
-
-    except OSError as exc:
-        error(f"Could not create backup: {exc}")
-        return None
-
-
-def automatic_backup():
-    info("Creating backup before changing settings...")
-
-    backup = create_backup()
-
-    if backup:
-        success(
-            f"Backup created in script directory: {backup.name}"
-        )
-        return True
-
-    error("Backup failed.")
-    return False
-
-
-def list_backups():
-    backups = sorted(
-        BACKUP_DIR.glob("cozy-backup-*.backup"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True
-    )
-
-    if not backups:
-        print("No backups found in the Python script directory.")
-        return
-
-    print()
-    print(color("Available backups", Colors.BOLD))
-    print()
-
-    for index, path in enumerate(backups, 1):
-        try:
-            size = path.stat().st_size
-        except OSError:
-            size = 0
-
-        print(
-            f"  {index:2}. {path.name} "
-            f"({size} bytes)"
-        )
-
-
-def find_backup(identifier):
-    backups = sorted(
-        BACKUP_DIR.glob("cozy-backup-*.backup"),
-        key=lambda path: path.stat().st_mtime,
-        reverse=True
-    )
-
-    if identifier.isdigit():
-        number = int(identifier)
-
-        if 1 <= number <= len(backups):
-            return backups[number - 1]
-
-        return None
-
-    candidate = BACKUP_DIR / identifier
-
-    if (
-        candidate.exists()
-        and candidate.is_file()
-        and candidate.suffix == ".backup"
-    ):
-        return candidate
-
-    return None
-
-
-def restore_backup(identifier):
-    path = find_backup(identifier)
-
-    if path is None:
-        error("Backup not found.")
-        return False
-
-    try:
-        data = json.loads(
-            path.read_text(encoding="utf-8")
-        )
-    except (OSError, json.JSONDecodeError) as exc:
-        error(f"Could not read backup: {exc}")
-        return False
-
-    if data.get("format") not in (1, 2):
-        error("Unsupported backup format.")
-        return False
-
-    files = data.get("files", {})
-
-    if not isinstance(files, dict):
-        error("Backup file data is invalid.")
-        return False
-
-    safety_backup = create_backup()
-
-    if safety_backup:
-        success(
-            f"Safety backup created: {safety_backup.name}"
-        )
-    else:
-        error("Could not create safety backup.")
-        return False
-
-    try:
-        for filename, file_data in files.items():
-            target = Path(filename)
-
-            if not isinstance(file_data, dict):
-                raise ValueError(
-                    f"Invalid backup entry: {filename}"
-                )
-
-            exists = file_data.get("exists", False)
-
-            if exists:
-                content = file_data.get("content")
-
-                if not isinstance(content, str):
-                    raise ValueError(
-                        f"Invalid content: {filename}"
-                    )
-
-                ensure_parent(target)
-
-                target.write_text(
-                    content,
-                    encoding="utf-8"
-                )
-
-            elif target.exists():
-                target.unlink()
-
-        for identifier, value in data.get(
-            "gsettings",
-            {}
-        ).items():
-            if "|" not in identifier:
-                continue
-
-            schema, key = identifier.split("|", 1)
-
-            if command_exists("gsettings"):
-                run_command(
-                    [
-                        "gsettings",
-                        "set",
-                        schema,
-                        key,
-                        value
-                    ]
-                )
-
-        for identifier, value in data.get(
-            "kde",
-            {}
-        ).items():
-            if "|" not in identifier:
-                continue
-
-            group, key = identifier.split("|", 1)
-
-            kde_write(
-                group,
-                key,
-                value
-            )
-
-        for identifier, value in data.get(
-            "xfce",
-            {}
-        ).items():
-            if "|" not in identifier:
-                continue
-
-            channel, key = identifier.split("|", 1)
-
-            xfce_set(
-                channel,
-                key,
-                value
-            )
-
-        success(f"Restored {path.name}")
-        return True
-
-    except (OSError, ValueError) as exc:
-        error(f"Restore failed: {exc}")
-        error(
-            f"Safety backup remains available as "
-            f"{safety_backup.name}"
-        )
-        return False
-
-
-def delete_backup(identifier):
-    path = find_backup(identifier)
-
-    if path is None:
-        error("Backup not found.")
-        return False
-
-    try:
-        path.unlink()
-        success(f"Deleted {path.name}")
-        return True
-    except OSError as exc:
-        error(f"Could not delete backup: {exc}")
-        return False
-
-
-def get_dark_mode():
-    desktop = detect_desktop()
-
-    if desktop in ("GNOME", "Cinnamon", "MATE"):
-        schema = {
-            "GNOME": "org.gnome.desktop.interface",
-            "Cinnamon": "org.cinnamon.desktop.interface",
-            "MATE": "org.mate.interface"
-        }[desktop]
-
-        value = gsettings_get(
-            schema,
-            "color-scheme"
-        )
-
-        if value:
-            return value
-
-    if desktop == "XFCE":
-        theme = xfce_get(
-            "xsettings",
-            "/Net/ThemeName"
-        )
-
-        if theme:
-            if "dark" in theme.lower():
-                return "dark"
-
-            return "light"
-
-    return "unknown"
-
-
-def set_dark_mode(value):
-    desktop = detect_desktop()
-
-    if desktop == "GNOME":
-        return gsettings_set(
-            "org.gnome.desktop.interface",
-            "color-scheme",
-            "'prefer-dark'" if value == "dark" else "'default'"
-        )
-
-    if desktop == "Cinnamon":
-        return gsettings_set(
-            "org.cinnamon.desktop.interface",
-            "color-scheme",
-            "'prefer-dark'" if value == "dark" else "'prefer-light'"
-        )
-
-    if desktop == "MATE":
-        return gsettings_set(
-            "org.mate.interface",
-            "gtk-theme",
-            "'Adwaita-dark'" if value == "dark" else "'Adwaita'"
-        )
-
-    if desktop == "XFCE":
-        current = xfce_get(
-            "xsettings",
-            "/Net/ThemeName"
-        )
-
-        if not current:
-            return False
-
-        if value == "dark":
-            if "dark" not in current.lower():
-                candidate = f"{current}-dark"
-            else:
-                candidate = current
-        else:
-            candidate = current.replace(
-                "-Dark",
-                ""
-            ).replace(
-                "-dark",
-                ""
-            )
-
-        return xfce_set(
-            "xsettings",
-            "/Net/ThemeName",
-            candidate
-        )
-
-    return False
-
-
 def get_font():
     desktop = detect_desktop()
 
@@ -1118,12 +419,24 @@ def get_font():
         )
 
     if desktop == "KDE Plasma":
+        value = kde_read(
+            "General",
+            "font"
+        )
+
+        if value:
+            return value
+
         return kde_read(
             "General",
             "font"
         )
 
-    return get_gtk_font()
+    return get_ini_value(
+        GTK3_SETTINGS,
+        "Settings",
+        "gtk-font-name"
+    )
 
 
 def set_font(value):
@@ -1133,21 +446,21 @@ def set_font(value):
         return gsettings_set(
             "org.gnome.desktop.interface",
             "font-name",
-            f"'{value}'"
+            value
         )
 
     if desktop == "Cinnamon":
         return gsettings_set(
             "org.cinnamon.desktop.interface",
             "font-name",
-            f"'{value}'"
+            value
         )
 
     if desktop == "MATE":
         return gsettings_set(
             "org.mate.interface",
             "font-name",
-            f"'{value}'"
+            value
         )
 
     if desktop == "XFCE":
@@ -1164,7 +477,18 @@ def set_font(value):
             value
         )
 
-    return set_gtk_font(value)
+    changed = False
+
+    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
+        if set_ini_value(
+            path,
+            "Settings",
+            "gtk-font-name",
+            value
+        ):
+            changed = True
+
+    return changed
 
 
 def get_theme():
@@ -1200,7 +524,11 @@ def get_theme():
             "ColorScheme"
         )
 
-    return get_gtk_theme()
+    return get_ini_value(
+        GTK3_SETTINGS,
+        "Settings",
+        "gtk-theme-name"
+    )
 
 
 def set_theme(value):
@@ -1210,21 +538,21 @@ def set_theme(value):
         return gsettings_set(
             "org.gnome.desktop.interface",
             "gtk-theme",
-            f"'{value}'"
+            value
         )
 
     if desktop == "Cinnamon":
         return gsettings_set(
             "org.cinnamon.desktop.interface",
             "gtk-theme",
-            f"'{value}'"
+            value
         )
 
     if desktop == "MATE":
         return gsettings_set(
             "org.mate.interface",
             "gtk-theme",
-            f"'{value}'"
+            value
         )
 
     if desktop == "XFCE":
@@ -1241,7 +569,18 @@ def set_theme(value):
             value
         )
 
-    return set_gtk_theme(value)
+    changed = False
+
+    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
+        if set_ini_value(
+            path,
+            "Settings",
+            "gtk-theme-name",
+            value
+        ):
+            changed = True
+
+    return changed
 
 
 def get_icon_theme():
@@ -1277,31 +616,41 @@ def get_icon_theme():
             "Theme"
         )
 
-    return get_icon_theme()
+    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
+        value = get_ini_value(
+            path,
+            "Settings",
+            "gtk-icon-theme"
+        )
+
+        if value:
+            return value
+
+    return None
 
 
-def set_icon(value):
+def set_icon_theme(value):
     desktop = detect_desktop()
 
     if desktop == "GNOME":
         return gsettings_set(
             "org.gnome.desktop.interface",
             "icon-theme",
-            f"'{value}'"
+            value
         )
 
     if desktop == "Cinnamon":
         return gsettings_set(
             "org.cinnamon.desktop.interface",
             "icon-theme",
-            f"'{value}'"
+            value
         )
 
     if desktop == "MATE":
         return gsettings_set(
             "org.mate.interface",
             "icon-theme",
-            f"'{value}'"
+            value
         )
 
     if desktop == "XFCE":
@@ -1318,10 +667,21 @@ def set_icon(value):
             value
         )
 
-    return set_icon_theme(value)
+    changed = False
+
+    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
+        if set_ini_value(
+            path,
+            "Settings",
+            "gtk-icon-theme",
+            value
+        ):
+            changed = True
+
+    return changed
 
 
-def get_cursor():
+def get_cursor_theme():
     desktop = detect_desktop()
 
     if desktop == "GNOME":
@@ -1348,31 +708,41 @@ def get_cursor():
             "/Gtk/CursorThemeName"
         )
 
-    return get_cursor_theme()
+    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
+        value = get_ini_value(
+            path,
+            "Settings",
+            "gtk-cursor-theme-name"
+        )
+
+        if value:
+            return value
+
+    return None
 
 
-def set_cursor(value):
+def set_cursor_theme(value):
     desktop = detect_desktop()
 
     if desktop == "GNOME":
         return gsettings_set(
             "org.gnome.desktop.interface",
             "cursor-theme",
-            f"'{value}'"
+            value
         )
 
     if desktop == "Cinnamon":
         return gsettings_set(
             "org.cinnamon.desktop.interface",
             "cursor-theme",
-            f"'{value}'"
+            value
         )
 
     if desktop == "MATE":
         return gsettings_set(
             "org.mate.peripherals-mouse",
             "cursor-theme",
-            f"'{value}'"
+            value
         )
 
     if desktop == "XFCE":
@@ -1382,7 +752,145 @@ def set_cursor(value):
             value
         )
 
-    return set_cursor_theme(value)
+    changed = False
+
+    for path in (GTK3_SETTINGS, GTK4_SETTINGS):
+        if set_ini_value(
+            path,
+            "Settings",
+            "gtk-cursor-theme-name",
+            value
+        ):
+            changed = True
+
+    if write_text(
+        CURSOR_INDEX,
+        "[Icon Theme]\n"
+        f"Inherits={value}\n"
+    ):
+        changed = True
+
+    return changed
+
+
+def get_cursor_size():
+    desktop = detect_desktop()
+
+    if desktop == "XFCE":
+        return xfce_get(
+            "xsettings",
+            "/Gtk/CursorThemeSize"
+        )
+
+    if desktop == "GNOME":
+        return gsettings_get(
+            "org.gnome.desktop.interface",
+            "cursor-size"
+        )
+
+    return None
+
+
+def set_cursor_size(value):
+    desktop = detect_desktop()
+
+    if desktop == "XFCE":
+        return xfce_set(
+            "xsettings",
+            "/Gtk/CursorThemeSize",
+            value
+        )
+
+    if desktop == "GNOME":
+        return gsettings_set(
+            "org.gnome.desktop.interface",
+            "cursor-size",
+            value
+        )
+
+    return False
+
+
+def get_dark_mode():
+    desktop = detect_desktop()
+
+    if desktop == "GNOME":
+        return gsettings_get(
+            "org.gnome.desktop.interface",
+            "color-scheme"
+        )
+
+    if desktop == "Cinnamon":
+        return gsettings_get(
+            "org.cinnamon.desktop.interface",
+            "color-scheme"
+        )
+
+    if desktop == "XFCE":
+        theme = get_theme()
+
+        if theme and "dark" in theme.lower():
+            return "dark"
+
+        return "light"
+
+    return None
+
+
+def set_dark_mode(value):
+    desktop = detect_desktop()
+
+    if desktop == "GNOME":
+        if value == "Dark":
+            return gsettings_set(
+                "org.gnome.desktop.interface",
+                "color-scheme",
+                "prefer-dark"
+            )
+
+        return gsettings_set(
+            "org.gnome.desktop.interface",
+            "color-scheme",
+            "default"
+        )
+
+    if desktop == "Cinnamon":
+        if value == "Dark":
+            return gsettings_set(
+                "org.cinnamon.desktop.interface",
+                "color-scheme",
+                "prefer-dark"
+            )
+
+        return gsettings_set(
+            "org.cinnamon.desktop.interface",
+            "color-scheme",
+            "prefer-light"
+        )
+
+    if desktop == "XFCE":
+        current = get_theme()
+
+        if not current:
+            return False
+
+        if value == "Dark":
+            if "dark" in current.lower():
+                target = current
+            else:
+                target = current + "-dark"
+        else:
+            target = current.replace(
+                "-dark",
+                ""
+            ).replace(
+                "-Dark",
+                ""
+            )
+
+        return set_theme(target)
+
+    return False
 
 
 def get_scale():
@@ -1406,7 +914,7 @@ def get_scale():
             except ValueError:
                 return dpi
 
-    return "1.0"
+    return None
 
 
 def set_scale(value):
@@ -1421,61 +929,350 @@ def set_scale(value):
 
     if desktop == "XFCE":
         try:
-            dpi = int(round(float(value) * 96))
+            dpi = str(
+                int(
+                    round(
+                        float(value) * 96
+                    )
+                )
+            )
         except ValueError:
             return False
 
         return xfce_set(
             "xsettings",
             "/Xft/DPI",
-            str(dpi)
+            dpi
         )
 
     return False
 
 
-def get_settings():
+def discover_fonts():
+    directories = [
+        HOME / ".fonts",
+        HOME / ".local" / "share" / "fonts",
+        Path("/usr/share/fonts"),
+        Path("/usr/local/share/fonts")
+    ]
+
+    fonts = set()
+
+    for directory in directories:
+        if not directory.exists() or not directory.is_dir():
+            continue
+
+        try:
+            for path in directory.rglob("*"):
+                if not path.is_file():
+                    continue
+
+                if path.suffix.lower() not in (
+                    ".ttf",
+                    ".otf",
+                    ".ttc"
+                ):
+                    continue
+
+                name = path.stem.replace(
+                    "-",
+                    " "
+                ).replace(
+                    "_",
+                    " "
+                )
+
+                fonts.add(name)
+
+        except (OSError, PermissionError):
+            continue
+
+    return sorted(
+        fonts,
+        key=str.lower
+    )
+
+
+def discover_theme_directories():
+    return [
+        HOME / ".themes",
+        HOME / ".icons",
+        HOME / ".local" / "share" / "themes",
+        HOME / ".local" / "share" / "icons",
+        Path("/usr/share/themes"),
+        Path("/usr/share/icons"),
+        Path("/usr/local/share/themes"),
+        Path("/usr/local/share/icons")
+    ]
+
+
+def discover_gtk_themes():
+    themes = set()
+
+    for directory in discover_theme_directories():
+        if not directory.exists() or not directory.is_dir():
+            continue
+
+        try:
+            for child in directory.iterdir():
+                if not child.is_dir():
+                    continue
+
+                if (
+                    (child / "gtk-3.0").exists()
+                    or
+                    (child / "gtk-4.0").exists()
+                ):
+                    themes.add(child.name)
+
+        except (OSError, PermissionError):
+            continue
+
+    return sorted(
+        themes,
+        key=str.lower
+    )
+
+
+def discover_icon_themes():
+    themes = set()
+
+    for directory in discover_theme_directories():
+        if not directory.exists() or not directory.is_dir():
+            continue
+
+        try:
+            for child in directory.iterdir():
+                if (
+                    child.is_dir()
+                    and
+                    (child / "index.theme").exists()
+                ):
+                    themes.add(child.name)
+
+        except (OSError, PermissionError):
+            continue
+
+    return sorted(
+        themes,
+        key=str.lower
+    )
+
+
+def discover_cursor_themes():
+    themes = set()
+
+    for directory in discover_theme_directories():
+        if not directory.exists() or not directory.is_dir():
+            continue
+
+        try:
+            for child in directory.iterdir():
+                if not child.is_dir():
+                    continue
+
+                if (child / "cursors").is_dir():
+                    themes.add(child.name)
+
+        except (OSError, PermissionError):
+            continue
+
+    return sorted(
+        themes,
+        key=str.lower
+    )
+
+
+def get_brightness():
+    if command_exists("brightnessctl"):
+        code, output, _ = run_command(
+            ["brightnessctl", "-m"]
+        )
+
+        if code == 0 and output:
+            parts = output.split(",")
+
+            if len(parts) >= 4:
+                return parts[3]
+
+    return None
+
+
+def set_brightness(value):
+    if not command_exists("brightnessctl"):
+        return False
+
+    code, _, stderr = run_command(
+        [
+            "brightnessctl",
+            "set",
+            value
+        ]
+    )
+
+    if code != 0:
+        if stderr:
+            error(stderr)
+        return False
+
+    return True
+
+
+def get_volume():
+    if not command_exists("pactl"):
+        return None
+
+    code, output, _ = run_command(
+        [
+            "pactl",
+            "get-sink-volume",
+            "@DEFAULT_SINK@"
+        ]
+    )
+
+    if code != 0:
+        return None
+
+    for part in output.split():
+        if part.endswith("%"):
+            return part
+
+    return None
+
+
+def set_volume(value):
+    if not command_exists("pactl"):
+        return False
+
+    code, _, stderr = run_command(
+        [
+            "pactl",
+            "set-sink-volume",
+            "@DEFAULT_SINK@",
+            value
+        ]
+    )
+
+    if code != 0:
+        if stderr:
+            error(stderr)
+        return False
+
+    return True
+
+
+def discover_wallpapers():
+    directories = [
+        HOME / "Pictures",
+        HOME / "Pictures" / "Wallpapers",
+        HOME / ".local" / "share" / "backgrounds",
+        Path("/usr/share/backgrounds")
+    ]
+
+    wallpapers = []
+
+    for directory in directories:
+        if not directory.exists() or not directory.is_dir():
+            continue
+
+        try:
+            for path in directory.rglob("*"):
+                if not path.is_file():
+                    continue
+
+                if path.suffix.lower() in (
+                    ".jpg",
+                    ".jpeg",
+                    ".png",
+                    ".webp"
+                ):
+                    wallpapers.append(str(path))
+
+        except (OSError, PermissionError):
+            continue
+
+    return sorted(
+        set(wallpapers),
+        key=str.lower
+    )
+
+
+def get_hostname():
+    return os.uname().nodename
+
+
+def set_hostname(value):
+    if not command_exists("hostnamectl"):
+        return False
+
+    code, _, stderr = run_command(
+        [
+            "hostnamectl",
+            "set-hostname",
+            value
+        ]
+    )
+
+    if code != 0:
+        if stderr:
+            error(stderr)
+        return False
+
+    return True
+
+
+def get_settings_tree():
     desktop = detect_desktop()
 
-    settings = [
+    appearance = [
         {
             "name": "Application Icon Theme",
-            "key": "icons",
             "get": get_icon_theme,
-            "set": set_icon,
+            "set": set_icon_theme,
             "options": discover_icon_themes
         },
         {
             "name": "Color Theme",
-            "key": "theme",
             "get": get_theme,
             "set": set_theme,
             "options": discover_gtk_themes
         },
         {
+            "name": "Cursor Size",
+            "get": get_cursor_size,
+            "set": set_cursor_size,
+            "options": lambda: [
+                "16",
+                "24",
+                "32",
+                "48",
+                "64",
+                "96"
+            ]
+        },
+        {
             "name": "Cursor Theme",
-            "key": "cursor",
-            "get": get_cursor,
-            "set": set_cursor,
+            "get": get_cursor_theme,
+            "set": set_cursor_theme,
             "options": discover_cursor_themes
         },
         {
             "name": "Dark Mode",
-            "key": "dark_mode",
             "get": get_dark_mode,
             "set": set_dark_mode,
-            "options": lambda: ["dark", "light"]
+            "options": lambda: [
+                "Dark",
+                "Light"
+            ]
         },
         {
             "name": "Font",
-            "key": "font",
             "get": get_font,
             "set": set_font,
             "options": discover_fonts
         },
         {
             "name": "Interface Scale",
-            "key": "scale",
             "get": get_scale,
             "set": set_scale,
             "options": lambda: [
@@ -1493,102 +1290,634 @@ def get_settings():
         }
     ]
 
+    display = [
+        {
+            "name": "Brightness",
+            "get": get_brightness,
+            "set": set_brightness,
+            "options": lambda: [
+                "10%",
+                "20%",
+                "30%",
+                "40%",
+                "50%",
+                "60%",
+                "70%",
+                "80%",
+                "90%",
+                "100%"
+            ]
+        }
+    ]
+
+    sound = [
+        {
+            "name": "Output Volume",
+            "get": get_volume,
+            "set": set_volume,
+            "options": lambda: [
+                "10%",
+                "20%",
+                "30%",
+                "40%",
+                "50%",
+                "60%",
+                "70%",
+                "80%",
+                "90%",
+                "100%"
+            ]
+        }
+    ]
+
+    system = [
+        {
+            "name": "Hostname",
+            "get": get_hostname,
+            "set": set_hostname,
+            "options": lambda: []
+        }
+    ]
+
     if desktop == "KDE Plasma":
-        settings = [
+        appearance = [
             setting
-            for setting in settings
-            if setting["key"] not in ("dark_mode", "scale")
+            for setting in appearance
+            if setting["name"] not in (
+                "Dark Mode",
+                "Interface Scale"
+            )
         ]
 
     if desktop == "MATE":
-        settings = [
+        appearance = [
             setting
-            for setting in settings
-            if setting["key"] != "scale"
+            for setting in appearance
+            if setting["name"] != "Interface Scale"
         ]
 
-    if desktop == "LXQt":
-        settings = [
+    if desktop not in (
+        "GNOME",
+        "Cinnamon",
+        "XFCE"
+    ):
+        appearance = [
             setting
-            for setting in settings
-            if setting["key"] in (
-                "font",
-                "icons",
-                "cursor"
+            for setting in appearance
+            if setting["name"] not in (
+                "Dark Mode",
+                "Interface Scale"
             )
         ]
 
-    if desktop == "Generic Linux":
-        settings = [
-            setting
-            for setting in settings
-            if setting["key"] in (
-                "font",
-                "icons",
-                "cursor",
-                "theme"
-            )
-        ]
+    return {
+        "Appearance": sorted(
+            appearance,
+            key=lambda item: item["name"].lower()
+        ),
+        "Display": sorted(
+            display,
+            key=lambda item: item["name"].lower()
+        ),
+        "Sound": sorted(
+            sound,
+            key=lambda item: item["name"].lower()
+        ),
+        "System": sorted(
+            system,
+            key=lambda item: item["name"].lower()
+        )
+    }
 
-    return sorted(
-        settings,
-        key=lambda item: item["name"].lower()
+
+def backup_filename():
+    timestamp = datetime.datetime.now().strftime(
+        "%Y%m%d-%H%M%S-%f"
+    )
+
+    return (
+        BACKUP_DIR
+        /
+        f"Cozy-Settings-{timestamp}.backup"
     )
 
 
-def verify_setting(setting, expected):
+def backup_paths():
+    return [
+        GTK2_SETTINGS,
+        GTK3_SETTINGS,
+        GTK4_SETTINGS,
+        CURSOR_INDEX,
+        KDE_GLOBALS,
+        XFCE_XSETTINGS,
+        XFCE_XFWM
+    ]
+
+
+def create_backup():
+    backup_path = backup_filename()
+
+    snapshot = {
+        "format": 3,
+        "created": datetime.datetime.now().isoformat(),
+        "tool": APP_NAME,
+        "brand": BRAND,
+        "desktop": detect_desktop(),
+        "session": session_type(),
+        "files": {},
+        "gsettings": {},
+        "kde": {},
+        "xfce": {}
+    }
+
+    for path in backup_paths():
+        filename = str(path)
+
+        if path.exists():
+            content = read_text(path)
+
+            if content is None:
+                error(
+                    f"Could not back up {path}"
+                )
+                return None
+
+            snapshot["files"][filename] = {
+                "exists": True,
+                "content": content
+            }
+        else:
+            snapshot["files"][filename] = {
+                "exists": False,
+                "content": None
+            }
+
+    gsettings_values = [
+        (
+            "org.gnome.desktop.interface",
+            "font-name"
+        ),
+        (
+            "org.gnome.desktop.interface",
+            "gtk-theme"
+        ),
+        (
+            "org.gnome.desktop.interface",
+            "icon-theme"
+        ),
+        (
+            "org.gnome.desktop.interface",
+            "cursor-theme"
+        ),
+        (
+            "org.gnome.desktop.interface",
+            "cursor-size"
+        ),
+        (
+            "org.gnome.desktop.interface",
+            "color-scheme"
+        ),
+        (
+            "org.gnome.desktop.interface",
+            "text-scaling-factor"
+        ),
+        (
+            "org.cinnamon.desktop.interface",
+            "font-name"
+        ),
+        (
+            "org.cinnamon.desktop.interface",
+            "gtk-theme"
+        ),
+        (
+            "org.cinnamon.desktop.interface",
+            "icon-theme"
+        ),
+        (
+            "org.cinnamon.desktop.interface",
+            "cursor-theme"
+        ),
+        (
+            "org.cinnamon.desktop.interface",
+            "color-scheme"
+        ),
+        (
+            "org.mate.interface",
+            "font-name"
+        ),
+        (
+            "org.mate.interface",
+            "gtk-theme"
+        ),
+        (
+            "org.mate.interface",
+            "icon-theme"
+        ),
+        (
+            "org.mate.peripherals-mouse",
+            "cursor-theme"
+        )
+    ]
+
+    for schema, key in gsettings_values:
+        value = gsettings_get(
+            schema,
+            key
+        )
+
+        if value is not None:
+            snapshot["gsettings"][
+                f"{schema}|{key}"
+            ] = value
+
+    kde_values = [
+        ("General", "ColorScheme"),
+        ("General", "font"),
+        ("Icons", "Theme")
+    ]
+
+    for group, key in kde_values:
+        value = kde_read(
+            group,
+            key
+        )
+
+        if value is not None:
+            snapshot["kde"][
+                f"{group}|{key}"
+            ] = value
+
+    xfce_values = [
+        (
+            "xsettings",
+            "/Gtk/FontName"
+        ),
+        (
+            "xsettings",
+            "/Net/ThemeName"
+        ),
+        (
+            "xsettings",
+            "/Net/IconThemeName"
+        ),
+        (
+            "xsettings",
+            "/Gtk/CursorThemeName"
+        ),
+        (
+            "xsettings",
+            "/Gtk/CursorThemeSize"
+        ),
+        (
+            "xsettings",
+            "/Xft/DPI"
+        )
+    ]
+
+    for channel, key in xfce_values:
+        value = xfce_get(
+            channel,
+            key
+        )
+
+        if value is not None:
+            snapshot["xfce"][
+                f"{channel}|{key}"
+            ] = value
+
     try:
-        current = setting["get"]()
-    except Exception:
-        return False
+        BACKUP_DIR.mkdir(
+            parents=True,
+            exist_ok=True
+        )
 
-    if current is None:
-        return False
+        backup_path.write_text(
+            json.dumps(
+                snapshot,
+                indent=2,
+                ensure_ascii=False
+            ),
+            encoding="utf-8"
+        )
 
-    return str(current).strip("'\"") == str(expected).strip("'\"")
+        return backup_path
+
+    except OSError as exc:
+        error(
+            f"Could not create backup: {exc}"
+        )
+        return None
 
 
-def choose_setting(settings):
+def automatic_backup():
+    info(
+        "Creating Cozy-Settings backup..."
+    )
+
+    backup = create_backup()
+
+    if backup:
+        success(
+            f"Backup created: {backup.name}"
+        )
+        return True
+
+    error(
+        "Backup failed. Change cancelled."
+    )
+
+    return False
+
+
+def list_backups():
+    backups = sorted(
+        BACKUP_DIR.glob(
+            "Cozy-Settings-*.backup"
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True
+    )
+
+    if not backups:
+        print(
+            "No Cozy-Settings backups found "
+            "in the script directory."
+        )
+        return
+
     print()
-    print(color("Available settings", Colors.BOLD))
+    print(
+        color(
+            "Cozy-Settings backups",
+            Colors.BOLD
+        )
+    )
     print()
 
-    for index, setting in enumerate(settings, 1):
+    for index, path in enumerate(
+        backups,
+        1
+    ):
         try:
-            current = setting["get"]()
-        except Exception:
-            current = None
-
-        if current is None:
-            current = "not configured"
+            size = path.stat().st_size
+        except OSError:
+            size = 0
 
         print(
             f"  {index:2}. "
-            f"{setting['name']} "
-            f"{color(f'[{current}]', Colors.DIM)}"
+            f"{path.name} "
+            f"({size} bytes)"
         )
 
-    print()
-    print("   0. Back")
-    print()
 
-    while True:
-        try:
-            choice = input("Select a setting: ").strip()
-        except KeyboardInterrupt:
-            print()
-            return None
+def find_backup(identifier):
+    backups = sorted(
+        BACKUP_DIR.glob(
+            "Cozy-Settings-*.backup"
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True
+    )
 
-        if choice == "0":
-            return None
+    if identifier.isdigit():
+        number = int(identifier)
 
-        if choice.isdigit():
-            number = int(choice)
+        if 1 <= number <= len(backups):
+            return backups[number - 1]
 
-            if 1 <= number <= len(settings):
-                return settings[number - 1]
+        return None
 
-        print("Please enter a valid number.")
+    candidate = BACKUP_DIR / identifier
+
+    if (
+        candidate.exists()
+        and candidate.is_file()
+        and candidate.suffix == ".backup"
+        and candidate.name.startswith(
+            "Cozy-Settings-"
+        )
+    ):
+        return candidate
+
+    return None
+
+
+def restore_backup(identifier):
+    path = find_backup(identifier)
+
+    if path is None:
+        error("Backup not found.")
+        return False
+
+    try:
+        data = json.loads(
+            path.read_text(
+                encoding="utf-8"
+            )
+        )
+    except (
+        OSError,
+        json.JSONDecodeError
+    ) as exc:
+        error(
+            f"Could not read backup: {exc}"
+        )
+        return False
+
+    if data.get("format") not in (
+        1,
+        2,
+        3
+    ):
+        error(
+            "Unsupported backup format."
+        )
+        return False
+
+    safety_backup = create_backup()
+
+    if safety_backup is None:
+        error(
+            "Could not create safety backup."
+        )
+        error(
+            "Restore cancelled."
+        )
+        return False
+
+    success(
+        f"Safety backup created: "
+        f"{safety_backup.name}"
+    )
+
+    try:
+        files = data.get(
+            "files",
+            {}
+        )
+
+        if not isinstance(files, dict):
+            raise ValueError(
+                "Invalid file data."
+            )
+
+        for filename, file_data in files.items():
+            target = Path(filename)
+
+            if not isinstance(
+                file_data,
+                dict
+            ):
+                raise ValueError(
+                    f"Invalid entry: {filename}"
+                )
+
+            exists = file_data.get(
+                "exists",
+                False
+            )
+
+            if exists:
+                content = file_data.get(
+                    "content"
+                )
+
+                if not isinstance(
+                    content,
+                    str
+                ):
+                    raise ValueError(
+                        f"Invalid content: {filename}"
+                    )
+
+                ensure_parent(target)
+
+                target.write_text(
+                    content,
+                    encoding="utf-8"
+                )
+
+            elif target.exists():
+                target.unlink()
+
+        for identifier, value in data.get(
+            "gsettings",
+            {}
+        ).items():
+            if "|" not in identifier:
+                continue
+
+            schema, key = identifier.split(
+                "|",
+                1
+            )
+
+            if command_exists(
+                "gsettings"
+            ):
+                run_command(
+                    [
+                        "gsettings",
+                        "set",
+                        schema,
+                        key,
+                        value
+                    ]
+                )
+
+        for identifier, value in data.get(
+            "kde",
+            {}
+        ).items():
+            if "|" not in identifier:
+                continue
+
+            group, key = identifier.split(
+                "|",
+                1
+            )
+
+            kde_write(
+                group,
+                key,
+                value
+            )
+
+        for identifier, value in data.get(
+            "xfce",
+            {}
+        ).items():
+            if "|" not in identifier:
+                continue
+
+            channel, key = identifier.split(
+                "|",
+                1
+            )
+
+            xfce_set(
+                channel,
+                key,
+                value
+            )
+
+        success(
+            f"Restored {path.name}"
+        )
+
+        info(
+            "Some desktop applications may need "
+            "to be restarted."
+        )
+
+        return True
+
+    except (
+        OSError,
+        ValueError
+    ) as exc:
+        error(
+            f"Restore failed: {exc}"
+        )
+        error(
+            f"Safety backup remains available: "
+            f"{safety_backup.name}"
+        )
+        return False
+
+
+def delete_backup(identifier):
+    path = find_backup(identifier)
+
+    if path is None:
+        error("Backup not found.")
+        return False
+
+    try:
+        path.unlink()
+        success(
+            f"Deleted {path.name}"
+        )
+        return True
+    except OSError as exc:
+        error(
+            f"Could not delete backup: {exc}"
+        )
+        return False
+
+
+def setting_value(setting):
+    try:
+        value = setting["get"]()
+    except Exception:
+        return None
+
+    if value is None or value == "":
+        return "not configured"
+
+    return str(value).strip(
+        "'\""
+    )
 
 
 def choose_option(setting):
@@ -1596,8 +1925,8 @@ def choose_option(setting):
 
     if not options:
         warning(
-            f"No available options were found for "
-            f"{setting['name']}."
+            f"No available options were found "
+            f"for {setting['name']}."
         )
         return None
 
@@ -1606,25 +1935,43 @@ def choose_option(setting):
         key=str.lower
     )
 
-    current = setting["get"]()
+    current = setting_value(
+        setting
+    )
 
     print()
-    print(color(setting["name"], Colors.BOLD))
+    print(
+        color(
+            setting["name"],
+            Colors.BOLD
+        )
+    )
     print()
 
-    if current is not None:
-        print(f"Current: {current}")
-        print()
+    print(
+        f"Current: {current}"
+    )
+    print()
 
-    for index, option in enumerate(options, 1):
+    for index, option in enumerate(
+        options,
+        1
+    ):
         marker = ""
 
-        if current is not None:
-            if str(current).strip("'\"") == str(option).strip("'\""):
-                marker = "  ← current"
+        if (
+            current != "not configured"
+            and
+            current == str(option).strip(
+                "'\""
+            )
+        ):
+            marker = "  ← current"
 
         print(
-            f"  {index:2}. {option}{marker}"
+            f"  {index:2}. "
+            f"{option}"
+            f"{marker}"
         )
 
     print()
@@ -1633,7 +1980,9 @@ def choose_option(setting):
 
     while True:
         try:
-            choice = input("Select an option: ").strip()
+            choice = input(
+                "Select an option: "
+            ).strip()
         except KeyboardInterrupt:
             print()
             return None
@@ -1645,119 +1994,383 @@ def choose_option(setting):
             number = int(choice)
 
             if 1 <= number <= len(options):
-                return options[number - 1]
+                return options[
+                    number - 1
+                ]
 
-        print("Please enter a valid number.")
+        print(
+            "Please enter a valid number."
+        )
+
+
+def verify_setting(setting, expected):
+    current = setting_value(
+        setting
+    )
+
+    expected = str(expected).strip(
+        "'\""
+    )
+
+    if current == expected:
+        return True
+
+    if (
+        setting["name"] == "Output Volume"
+        and current
+    ):
+        return current == expected
+
+    if (
+        setting["name"] == "Brightness"
+        and current
+    ):
+        return current == expected
+
+    return False
 
 
 def change_setting(setting):
-    value = choose_option(setting)
+    value = choose_option(
+        setting
+    )
 
     if value is None:
         return
 
     print()
     print(
-        f"Change {setting['name']} to: "
-        f"{value}"
+        f"Selected: "
+        f"{setting['name']} → {value}"
     )
 
-    if not ask_confirmation("Apply this change?"):
-        info("Change cancelled.")
+    if not ask_confirmation(
+        "Apply this setting?"
+    ):
+        info(
+            "Change cancelled."
+        )
         return
 
     if not automatic_backup():
         return
 
     try:
-        changed = setting["set"](value)
+        changed = setting["set"](
+            value
+        )
     except Exception as exc:
         error(
-            f"Setting could not be changed: {exc}"
+            f"Could not apply setting: "
+            f"{exc}"
         )
         return
 
     if not changed:
         error(
-            f"{setting['name']} could not be changed."
+            f"{setting['name']} could not "
+            f"be changed."
         )
         return
 
-    if verify_setting(setting, value):
+    if verify_setting(
+        setting,
+        value
+    ):
         success(
-            f"{setting['name']} changed to {value}"
+            f"{setting['name']} changed "
+            f"to {value}"
         )
     else:
         warning(
             f"{setting['name']} was written, "
-            f"but verification failed."
+            f"but verification did not match."
         )
 
-    info(
-        "Some applications may need to be restarted "
-        "for the change to appear."
-    )
+        info(
+            "The desktop may require a restart "
+            "or session reload."
+        )
 
 
-def show_current():
-    desktop = detect_desktop()
-    session = get_session_type()
+def category_menu(category, settings):
+    while True:
+        print()
+        print(
+            color(
+                category,
+                Colors.BOLD
+            )
+        )
+        print()
 
-    print()
-    print(color("System information", Colors.BOLD))
-    print()
-    print(f"  Desktop : {desktop}")
-    print(f"  Session : {session}")
-    print(f"  Script  : {SCRIPT_DIR}")
-    print()
+        for index, setting in enumerate(
+            settings,
+            1
+        ):
+            current = setting_value(
+                setting
+            )
 
-    print(color("Current settings", Colors.BOLD))
-    print()
+            print(
+                f"  {index:2}. "
+                f"{setting['name']:<28} "
+                f"{color(f'[{current}]', Colors.DIM)}"
+            )
 
-    for setting in get_settings():
+        print()
+        print("   0. Back")
+        print()
+
         try:
-            value = setting["get"]()
-        except Exception:
-            value = None
+            choice = input(
+                "Select a setting: "
+            ).strip()
+        except KeyboardInterrupt:
+            print()
+            return
 
-        if value is None or value == "":
-            value = "not configured"
+        if choice == "0":
+            return
+
+        if choice.isdigit():
+            number = int(choice)
+
+            if 1 <= number <= len(settings):
+                change_setting(
+                    settings[number - 1]
+                )
+                pause()
+                continue
 
         print(
-            f"  {setting['name']:<25} {value}"
+            "Please enter a valid number."
         )
 
 
-def settings_menu():
+def main_menu():
     while True:
         banner()
 
         desktop = detect_desktop()
 
         print(
+            f"Desktop: "
+            f"{color(desktop, Colors.CYAN)}"
+        )
+
+        print(
+            f"Session: "
+            f"{color(session_type(), Colors.CYAN)}"
+        )
+
+        print()
+
+        tree = get_settings_tree()
+
+        categories = sorted(
+            tree.keys(),
+            key=str.lower
+        )
+
+        print(
             color(
-                f"Desktop detected: {desktop}",
-                Colors.CYAN
+                "Settings",
+                Colors.BOLD
+            )
+        )
+        print()
+
+        for index, category in enumerate(
+            categories,
+            1
+        ):
+            print(
+                f"  {index:2}. "
+                f"{category}"
+            )
+
+        print()
+        print(
+            f"  {len(categories) + 1:2}. "
+            f"Backups"
+        )
+
+        print(
+            f"  {len(categories) + 2:2}. "
+            f"Current Settings"
+        )
+
+        print(
+            f"  {len(categories) + 3:2}. "
+            f"Exit"
+        )
+
+        print()
+
+        try:
+            choice = input(
+                "Choose a category: "
+            ).strip()
+        except KeyboardInterrupt:
+            print()
+            return
+
+        if not choice.isdigit():
+            warning(
+                "Please enter a valid number."
+            )
+            continue
+
+        number = int(choice)
+
+        if 1 <= number <= len(categories):
+            category = categories[
+                number - 1
+            ]
+
+            category_menu(
+                category,
+                tree[category]
+            )
+
+        elif number == len(categories) + 1:
+            backup_menu()
+
+        elif number == len(categories) + 2:
+            show_current()
+            pause()
+
+        elif number == len(categories) + 3:
+            print()
+            print(BRAND)
+            print()
+            return
+
+        else:
+            warning(
+                "Invalid option."
+            )
+
+
+def show_current():
+    banner()
+
+    print(
+        color(
+            "Current system settings",
+            Colors.BOLD
+        )
+    )
+
+    print()
+    print(
+        f"Desktop: {detect_desktop()}"
+    )
+    print(
+        f"Session: {session_type()}"
+    )
+    print()
+
+    tree = get_settings_tree()
+
+    for category in sorted(
+        tree.keys(),
+        key=str.lower
+    ):
+        print(
+            color(
+                category,
+                Colors.BOLD
             )
         )
 
-        settings = get_settings()
+        for setting in tree[category]:
+            print(
+                f"  "
+                f"{setting['name']:<28} "
+                f"{setting_value(setting)}"
+            )
 
-        setting = choose_setting(settings)
+        print()
 
-        if setting is None:
+
+def backup_menu():
+    while True:
+        banner()
+
+        print(
+            color(
+                "Backup Management",
+                Colors.BOLD
+            )
+        )
+
+        print()
+        print(
+            f"Backup directory: "
+            f"{BACKUP_DIR}"
+        )
+        print()
+
+        print("  1. Create backup")
+        print("  2. List backups")
+        print("  3. Restore backup")
+        print("  4. Delete backup")
+        print("  0. Back")
+        print()
+
+        try:
+            choice = input(
+                "Choose an option: "
+            ).strip()
+        except KeyboardInterrupt:
+            print()
             return
 
-        change_setting(setting)
+        if choice == "1":
+            backup = create_backup()
 
-        pause()
+            if backup:
+                success(
+                    f"Backup created: "
+                    f"{backup.name}"
+                )
+            else:
+                error(
+                    "Backup creation failed."
+                )
+
+            pause()
+
+        elif choice == "2":
+            list_backups()
+            pause()
+
+        elif choice == "3":
+            restore_interactive()
+            pause()
+
+        elif choice == "4":
+            delete_backup_interactive()
+            pause()
+
+        elif choice == "0":
+            return
+
+        else:
+            warning(
+                "Invalid option."
+            )
 
 
 def restore_interactive():
     list_backups()
 
     backups = sorted(
-        BACKUP_DIR.glob("cozy-backup-*.backup"),
+        BACKUP_DIR.glob(
+            "Cozy-Settings-*.backup"
+        ),
         key=lambda path: path.stat().st_mtime,
         reverse=True
     )
@@ -1779,11 +2392,24 @@ def restore_interactive():
     if choice == "0":
         return
 
-    restore_backup(choice)
+    restore_backup(
+        choice
+    )
 
 
 def delete_backup_interactive():
     list_backups()
+
+    backups = sorted(
+        BACKUP_DIR.glob(
+            "Cozy-Settings-*.backup"
+        ),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True
+    )
+
+    if not backups:
+        return
 
     print()
 
@@ -1799,26 +2425,34 @@ def delete_backup_interactive():
     if choice == "0":
         return
 
-    path = find_backup(choice)
+    path = find_backup(
+        choice
+    )
 
     if path is None:
-        error("Backup not found.")
+        error(
+            "Backup not found."
+        )
         return
 
     if not ask_confirmation(
         f"Delete {path.name}?"
     ):
-        info("Deletion cancelled.")
+        info(
+            "Deletion cancelled."
+        )
         return
 
-    delete_backup(choice)
+    delete_backup(
+        choice
+    )
 
 
 def build_parser():
     parser = argparse.ArgumentParser(
         description=(
-            "Cozy Linux Settings - a terminal-based "
-            "Linux desktop settings tool."
+            "Cozy Settings - terminal Linux "
+            "settings manager."
         )
     )
 
@@ -1833,7 +2467,12 @@ def build_parser():
 
     subparsers.add_parser(
         "current",
-        help="Show current desktop and settings"
+        help="Show current settings"
+    )
+
+    subparsers.add_parser(
+        "backup",
+        help="Create a backup"
     )
 
     subparsers.add_parser(
@@ -1869,17 +2508,28 @@ def main():
     args = parser.parse_args()
 
     if args.command is None:
-        settings_menu()
+        main_menu()
         return 0
 
     if args.command == "menu":
-        settings_menu()
+        main_menu()
         return 0
 
     if args.command == "current":
-        banner()
         show_current()
         return 0
+
+    if args.command == "backup":
+        backup = create_backup()
+
+        if backup:
+            success(
+                f"Backup created: "
+                f"{backup.name}"
+            )
+            return 0
+
+        return 1
 
     if args.command == "backups":
         list_backups()
@@ -1888,14 +2538,18 @@ def main():
     if args.command == "restore":
         return (
             0
-            if restore_backup(args.backup)
+            if restore_backup(
+                args.backup
+            )
             else 1
         )
 
     if args.command == "delete-backup":
         return (
             0
-            if delete_backup(args.backup)
+            if delete_backup(
+                args.backup
+            )
             else 1
         )
 
@@ -1905,8 +2559,12 @@ def main():
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        sys.exit(
+            main()
+        )
     except KeyboardInterrupt:
-        print("\n\nCancelled.")
+        print(
+            "\n\nCancelled."
+        )
         sys.exit(130)
 # not tested
