@@ -1,5 +1,13 @@
 # Linux-Tool-Manager
 > easy way to update and grab all the tools i make for you and me
+
+# How to install?
+> just download Linux-Tool-Manager.py and put it in itself folder/directory
+> LTM will tell you if your out of date on LTM
+> run it using python
+> use it
+
+
 # Pros of using LTM?
 > auto grabs you the latest updates for the tools you have from me
 
