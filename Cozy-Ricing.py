@@ -1,423 +1,1120 @@
 import argparse
 import configparser
+import datetime
 import json
-import shutil
-import subprocess
 import sys
 from pathlib import Path
 
 
-APP_NAME = "Cozy Ricing"
-FOOTER = "Made with ❤️ by Cozy"
+APP_NAME = "Cozy Theme Tool"
+BRAND = "Made with ❤️ by Cozy"
 
-BASE_DIR = Path(__file__).resolve().parent
-BACKUP_DIR = BASE_DIR / "backups"
-DATA_FILE = BASE_DIR / "data.json"
+SCRIPT_DIR = Path(__file__).resolve().parent
+BACKUP_DIR = SCRIPT_DIR
+HOME = Path.home()
 
-USER_APPS_DIR = Path.home() / ".local" / "share" / "applications"
-
-
-def ensure_dirs():
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    USER_APPS_DIR.mkdir(parents=True, exist_ok=True)
+GTK3_SETTINGS = HOME / ".config" / "gtk-3.0" / "settings.ini"
+GTK4_SETTINGS = HOME / ".config" / "gtk-4.0" / "settings.ini"
+CURSOR_INDEX = HOME / ".icons" / "default" / "index.theme"
 
 
-def load_data():
-    if not DATA_FILE.exists():
-        return {}
+class Colors:
+    RESET = "\033[0m"
+    BOLD = "\033[1m"
+    DIM = "\033[2m"
+    RED = "\033[31m"
+    GREEN = "\033[32m"
+    YELLOW = "\033[33m"
+    MAGENTA = "\033[35m"
+    CYAN = "\033[36m"
 
+
+def color(text, value):
+    if not sys.stdout.isatty():
+        return text
+    return f"{value}{text}{Colors.RESET}"
+
+
+def success(message):
+    print(color(f"✓ {message}", Colors.GREEN))
+
+
+def error(message):
+    print(color(f"✗ {message}", Colors.RED), file=sys.stderr)
+
+
+def info(message):
+    print(color(f"• {message}", Colors.CYAN))
+
+
+def warning(message):
+    print(color(f"! {message}", Colors.YELLOW))
+
+
+def banner():
+    print()
+    print(color("╔══════════════════════════════════════════╗", Colors.MAGENTA))
+    print(color("║          COZY THEME TOOL                 ║", Colors.MAGENTA))
+    print(color("╚══════════════════════════════════════════╝", Colors.MAGENTA))
+    print()
+    print(color(BRAND, Colors.DIM))
+    print()
+
+
+def pause():
     try:
-        return json.loads(DATA_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        print(f"Warning: could not read {DATA_FILE}")
-        return {}
+        input("\nPress Enter to continue...")
+    except KeyboardInterrupt:
+        print()
 
 
-def save_data(data):
-    DATA_FILE.write_text(
-        json.dumps(data, indent=4),
-        encoding="utf-8",
-    )
+def ask_confirmation(message):
+    while True:
+        try:
+            answer = input(f"{message} [y/N]: ").strip().lower()
+        except KeyboardInterrupt:
+            print()
+            return False
+
+        if answer in ("y", "yes"):
+            return True
+
+        if answer in ("", "n", "no"):
+            return False
+
+        print("Please answer yes or no.")
 
 
-def get_application_dirs():
-    directories = [
-        USER_APPS_DIR,
-        Path("/usr/local/share/applications"),
-        Path("/usr/share/applications"),
-    ]
-
-    return [
-        directory
-        for directory in directories
-        if directory.exists()
-    ]
+def ensure_parent(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def read_desktop_file(path):
-    parser = configparser.ConfigParser(
-        interpolation=None,
-        strict=False,
-    )
+def ensure_backup_directory():
+    try:
+        BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        return True
+    except OSError as exc:
+        error(f"Cannot access script directory: {exc}")
+        return False
 
-    parser.optionxform = str
-    parser.read(path, encoding="utf-8")
 
-    if "Desktop Entry" not in parser:
+def read_text(path):
+    try:
+        return path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        error(f"Could not read {path}: {exc}")
         return None
 
-    return parser
 
+def get_ini_value(path, section, key):
+    if not path.exists():
+        return None
 
-def find_applications():
-    applications = {}
+    parser = configparser.ConfigParser()
 
-    for directory in get_application_dirs():
-        for desktop_file in directory.glob("*.desktop"):
-            desktop_id = desktop_file.name
+    try:
+        parser.read(path, encoding="utf-8")
+    except (OSError, configparser.Error):
+        return None
 
-            if desktop_id in applications:
-                continue
-
-            try:
-                parser = read_desktop_file(desktop_file)
-
-                if parser is None:
-                    continue
-
-                entry = parser["Desktop Entry"]
-
-                if entry.get("Type", "Application") != "Application":
-                    continue
-
-                if entry.get("NoDisplay", "").lower() == "true":
-                    continue
-
-                name = entry.get("Name", desktop_id)
-                icon = entry.get("Icon", "")
-
-                applications[desktop_id] = {
-                    "id": desktop_id,
-                    "name": name,
-                    "icon": icon,
-                    "path": str(desktop_file),
-                }
-
-            except (OSError, configparser.Error):
-                continue
-
-    return sorted(
-        applications.values(),
-        key=lambda app: app["name"].lower(),
-    )
-
-
-def find_application(desktop_id):
-    for application in find_applications():
-        if application["id"] == desktop_id:
-            return application
+    if parser.has_option(section, key):
+        return parser.get(section, key)
 
     return None
 
 
-def refresh_desktop_database():
-    command = shutil.which("update-desktop-database")
+def set_ini_values(path, values):
+    parser = configparser.ConfigParser()
 
-    if not command:
-        return
+    if path.exists():
+        try:
+            parser.read(path, encoding="utf-8")
+        except configparser.Error as exc:
+            error(f"Could not parse {path}: {exc}")
+            return False
 
-    try:
-        subprocess.run(
-            [command, str(USER_APPS_DIR)],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    except OSError:
-        pass
+    for (section, key), value in values.items():
+        if not parser.has_section(section):
+            parser.add_section(section)
 
-
-def backup_desktop_file(desktop_id, source):
-    backup_path = BACKUP_DIR / desktop_id
-
-    if backup_path.exists():
-        raise RuntimeError(
-            f"A backup already exists: {backup_path}"
-        )
-
-    shutil.copy2(source, backup_path)
-
-    return backup_path
-
-
-def set_icon(desktop_id, icon_path):
-    ensure_dirs()
-
-    application = find_application(desktop_id)
-
-    if application is None:
-        print(f"Error: application '{desktop_id}' was not found.")
-        print("Run './cozy_ricing.py list' to see available applications.")
-        return False
-
-    icon_path = Path(icon_path).expanduser().resolve()
-
-    if not icon_path.exists():
-        print(f"Error: icon does not exist: {icon_path}")
-        return False
-
-    if not icon_path.is_file():
-        print(f"Error: icon is not a file: {icon_path}")
-        return False
-
-    data = load_data()
-
-    if desktop_id in data:
-        print(
-            f"Error: {application['name']} is already customized."
-        )
-        print(
-            f"Use './cozy_ricing.py restore {desktop_id}' "
-            "before changing it again."
-        )
-        return False
-
-    original_path = Path(application["path"])
-
-    backup_path = backup_desktop_file(
-        desktop_id,
-        original_path,
-    )
-
-    target_path = USER_APPS_DIR / desktop_id
-
-    shutil.copy2(
-        original_path,
-        target_path,
-    )
+        parser.set(section, key, value)
 
     try:
-        parser = read_desktop_file(target_path)
+        ensure_parent(path)
 
-        if parser is None:
-            raise RuntimeError(
-                f"Could not parse desktop file: {target_path}"
-            )
+        with path.open("w", encoding="utf-8") as file:
+            parser.write(file)
 
-        entry = parser["Desktop Entry"]
+        return True
 
-        original_icon = entry.get("Icon", "")
-        entry["Icon"] = str(icon_path)
+    except OSError as exc:
+        error(f"Could not write {path}: {exc}")
+        return False
 
-        with target_path.open(
-            "w",
-            encoding="utf-8",
-        ) as file:
-            parser.write(
-                file,
-                space_around_delimiters=False,
-            )
 
-    except Exception:
-        if target_path.exists():
-            target_path.unlink()
+def get_current_cursor_theme():
+    for settings in (GTK3_SETTINGS, GTK4_SETTINGS):
+        value = get_ini_value(
+            settings,
+            "Settings",
+            "gtk-cursor-theme-name"
+        )
 
-        if backup_path.exists():
-            backup_path.unlink()
+        if value:
+            return value
 
-        raise
+    if CURSOR_INDEX.exists():
+        content = read_text(CURSOR_INDEX)
 
-    data[desktop_id] = {
-        "application_name": application["name"],
-        "desktop_id": desktop_id,
-        "original_path": str(original_path),
-        "override_path": str(target_path),
-        "backup_path": str(backup_path),
-        "original_icon": original_icon,
-        "new_icon": str(icon_path),
+        if content:
+            for line in content.splitlines():
+                line = line.strip()
+
+                if line.lower().startswith("inherits="):
+                    return line.split("=", 1)[1].strip()
+
+                if line.lower().startswith("inheriting="):
+                    return line.split("=", 1)[1].strip()
+
+    return None
+
+
+def set_cursor_theme(theme):
+    values = {
+        ("Settings", "gtk-cursor-theme-name"): theme
     }
 
-    save_data(data)
-    refresh_desktop_database()
+    changed = False
 
-    print()
-    print(f"✓ Icon changed for {application['name']}")
-    print(f"  New icon: {icon_path}")
-    print(f"  Backup:   {backup_path}")
-    print()
-    print(FOOTER)
+    for settings in (GTK3_SETTINGS, GTK4_SETTINGS):
+        if set_ini_values(settings, values):
+            changed = True
 
-    return True
+    try:
+        ensure_parent(CURSOR_INDEX)
 
-
-def restore_icon(desktop_id):
-    ensure_dirs()
-
-    data = load_data()
-
-    if desktop_id not in data:
-        print(
-            f"Error: no Cozy Ricing backup exists for '{desktop_id}'."
+        CURSOR_INDEX.write_text(
+            "[Icon Theme]\n"
+            f"Inherits={theme}\n",
+            encoding="utf-8"
         )
-        return False
 
-    customization = data[desktop_id]
+        changed = True
 
-    backup_path = Path(customization["backup_path"])
-    override_path = Path(customization["override_path"])
+    except OSError as exc:
+        error(f"Could not configure cursor theme: {exc}")
 
-    if not backup_path.exists():
-        print(f"Error: backup is missing: {backup_path}")
-        return False
+    return changed
 
-    if override_path.exists():
-        override_path.unlink()
 
-    del data[desktop_id]
-    save_data(data)
+def get_current_icon_theme():
+    for settings in (GTK3_SETTINGS, GTK4_SETTINGS):
+        value = get_ini_value(
+            settings,
+            "Settings",
+            "gtk-icon-theme"
+        )
 
-    refresh_desktop_database()
+        if value:
+            return value
 
-    print()
-    print(
-        f"✓ Restored {customization['application_name']}"
+    return None
+
+
+def set_icon_theme(theme):
+    values = {
+        ("Settings", "gtk-icon-theme"): theme
+    }
+
+    changed = False
+
+    for settings in (GTK3_SETTINGS, GTK4_SETTINGS):
+        if set_ini_values(settings, values):
+            changed = True
+
+    return changed
+
+
+def theme_directories():
+    return [
+        HOME / ".icons",
+        HOME / ".local" / "share" / "icons",
+        HOME / ".local" / "share" / "themes",
+        Path("/usr/share/icons"),
+        Path("/usr/share/themes"),
+        Path("/usr/local/share/icons"),
+        Path("/usr/local/share/themes"),
+    ]
+
+
+def discover_icon_themes():
+    themes = set()
+
+    for directory in theme_directories():
+        if not directory.exists() or not directory.is_dir():
+            continue
+
+        try:
+            for child in directory.iterdir():
+                if not child.is_dir():
+                    continue
+
+                if (child / "index.theme").exists():
+                    themes.add(child.name)
+
+        except (OSError, PermissionError):
+            continue
+
+    return sorted(themes, key=str.lower)
+
+
+def discover_cursor_themes():
+    themes = set()
+
+    for directory in theme_directories():
+        if not directory.exists() or not directory.is_dir():
+            continue
+
+        try:
+            for child in directory.iterdir():
+                if not child.is_dir():
+                    continue
+
+                cursor_directory = child / "cursors"
+
+                if cursor_directory.exists() and cursor_directory.is_dir():
+                    themes.add(child.name)
+
+        except (OSError, PermissionError):
+            continue
+
+    return sorted(themes, key=str.lower)
+
+
+def timestamp():
+    return datetime.datetime.now().strftime(
+        "%Y%m%d-%H%M%S-%f"
     )
-    print(f"  Original icon: {customization['original_icon']}")
+
+
+def backup_filename():
+    return BACKUP_DIR / f"cozy-backup-{timestamp()}.backup"
+
+
+def create_backup():
+    if not ensure_backup_directory():
+        return None
+
+    backup_path = backup_filename()
+
+    snapshot = {
+        "format": 1,
+        "created": datetime.datetime.now().isoformat(),
+        "tool": APP_NAME,
+        "brand": BRAND,
+        "files": {}
+    }
+
+    paths = [
+        GTK3_SETTINGS,
+        GTK4_SETTINGS,
+        CURSOR_INDEX,
+    ]
+
+    for path in paths:
+        key = str(path)
+
+        if path.exists():
+            content = read_text(path)
+
+            if content is None:
+                error(f"Could not back up {path}")
+                return None
+
+            snapshot["files"][key] = {
+                "exists": True,
+                "content": content
+            }
+        else:
+            snapshot["files"][key] = {
+                "exists": False,
+                "content": None
+            }
+
+    try:
+        backup_path.write_text(
+            json.dumps(
+                snapshot,
+                indent=2,
+                ensure_ascii=False
+            ),
+            encoding="utf-8"
+        )
+
+        return backup_path
+
+    except OSError as exc:
+        error(f"Could not create backup: {exc}")
+        return None
+
+
+def automatic_backup():
     print()
-    print(FOOTER)
+    info("Creating automatic backup...")
 
-    return True
+    backup = create_backup()
+
+    if backup:
+        success(f"Automatic backup created: {backup.name}")
+        return True
+
+    warning("The automatic backup failed.")
+    print()
+    print("Changes cannot safely continue without a backup.")
+    print()
+
+    if not ask_confirmation(
+        "Would you like to attempt a manual backup now?"
+    ):
+        error("Changes cancelled.")
+        return False
+
+    print()
+    info("Attempting manual backup...")
+
+    manual_backup = create_backup()
+
+    if manual_backup:
+        success(f"Manual backup created: {manual_backup.name}")
+        return True
+
+    error("Manual backup also failed.")
+    print()
+
+    if ask_confirmation("Continue WITHOUT a backup?"):
+        warning("You chose to continue without a backup.")
+        return True
+
+    error("Changes cancelled.")
+    return False
 
 
-def list_applications():
-    applications = find_applications()
+def list_backups():
+    backups = sorted(
+        BACKUP_DIR.glob("*.backup"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True
+    )
 
-    if not applications:
-        print("No applications found.")
+    if not backups:
+        print("No .backup files found in the script directory.")
         return
 
-    print(f"{APP_NAME} - Applications")
-    print("=" * 50)
+    print()
+    print(color("Available backups:", Colors.BOLD))
     print()
 
-    for application in applications:
-        print(f"{application['id']}")
-        print(f"  Name: {application['name']}")
-        print(f"  Icon: {application['icon']}")
-        print(f"  File: {application['path']}")
+    for index, path in enumerate(backups, 1):
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+
+        print(
+            f"  {index:2}. {path.name} "
+            f"({size} bytes)"
+        )
+
+
+def find_backup(identifier):
+    backups = sorted(
+        BACKUP_DIR.glob("*.backup"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True
+    )
+
+    if not backups:
+        return None
+
+    if identifier.isdigit():
+        number = int(identifier)
+
+        if 1 <= number <= len(backups):
+            return backups[number - 1]
+
+        return None
+
+    candidate = BACKUP_DIR / identifier
+
+    if (
+        candidate.exists()
+        and candidate.is_file()
+        and candidate.suffix == ".backup"
+    ):
+        return candidate
+
+    return None
+
+
+def restore_backup(identifier):
+    path = find_backup(identifier)
+
+    if path is None:
+        error("Backup not found.")
+        return False
+
+    try:
+        data = json.loads(
+            path.read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        error(f"Could not read backup: {exc}")
+        return False
+
+    if data.get("format") != 1:
+        error("Unsupported backup format.")
+        return False
+
+    files = data.get("files")
+
+    if not isinstance(files, dict):
+        error("Backup is missing its file data.")
+        return False
+
+    print()
+    info("Creating safety backup before restoring...")
+
+    safety_backup = create_backup()
+
+    if safety_backup is None:
+        warning("Safety backup failed.")
         print()
 
-    print(FOOTER)
+        if not ask_confirmation(
+            "Attempt a manual safety backup?"
+        ):
+            error("Restore cancelled.")
+            return False
+
+        safety_backup = create_backup()
+
+        if safety_backup is None:
+            error("Manual safety backup failed.")
+
+            if not ask_confirmation(
+                "Restore without a safety backup?"
+            ):
+                error("Restore cancelled.")
+                return False
+
+            warning(
+                "You chose to restore without a safety backup."
+            )
+        else:
+            success(
+                f"Manual safety backup created: "
+                f"{safety_backup.name}"
+            )
+    else:
+        success(
+            f"Safety backup created: "
+            f"{safety_backup.name}"
+        )
+
+    try:
+        for filename, file_data in files.items():
+            target = Path(filename)
+
+            exists = file_data.get("exists", False)
+            content = file_data.get("content")
+
+            if exists:
+                if not isinstance(content, str):
+                    raise ValueError(
+                        f"Invalid content for {filename}"
+                    )
+
+                ensure_parent(target)
+
+                target.write_text(
+                    content,
+                    encoding="utf-8"
+                )
+
+            elif target.exists():
+                target.unlink()
+
+        success(f"Restored: {path.name}")
+        return True
+
+    except (OSError, ValueError) as exc:
+        error(f"Restore failed: {exc}")
+
+        if safety_backup:
+            error(
+                f"Your safety backup is available as "
+                f"{safety_backup.name}"
+            )
+
+        return False
 
 
-def list_customizations():
-    data = load_data()
+def delete_backup(identifier):
+    path = find_backup(identifier)
 
-    if not data:
-        print("No customized applications.")
-        print()
-        print(FOOTER)
+    if path is None:
+        error("Backup not found.")
+        return False
+
+    try:
+        path.unlink()
+        success(f"Deleted {path.name}")
+        return True
+
+    except OSError as exc:
+        error(f"Could not delete backup: {exc}")
+        return False
+
+
+def show_current():
+    cursor = get_current_cursor_theme()
+    icons = get_current_icon_theme()
+
+    print()
+    print(color("Current theme configuration", Colors.BOLD))
+    print()
+
+    print(
+        "  Cursor theme : "
+        + (
+            cursor
+            if cursor
+            else color("not configured", Colors.DIM)
+        )
+    )
+
+    print(
+        "  Icon theme   : "
+        + (
+            icons
+            if icons
+            else color("not configured", Colors.DIM)
+        )
+    )
+
+
+def choose_theme(themes, title):
+    print()
+    print(color(title, Colors.BOLD))
+    print()
+
+    if not themes:
+        warning("No installed themes were found.")
+        return None
+
+    for index, theme in enumerate(themes, 1):
+        print(f"  {index:2}. {theme}")
+
+    print()
+    print("   0. Cancel")
+    print()
+
+    while True:
+        try:
+            choice = input("Select a theme: ").strip()
+
+        except KeyboardInterrupt:
+            print()
+            return None
+
+        if choice == "0":
+            return None
+
+        if choice.isdigit():
+            number = int(choice)
+
+            if 1 <= number <= len(themes):
+                return themes[number - 1]
+
+        print("Please enter a valid number.")
+
+
+def change_cursor_interactive():
+    themes = discover_cursor_themes()
+
+    theme = choose_theme(
+        themes,
+        "Installed cursor themes"
+    )
+
+    if not theme:
         return
 
-    print(f"{APP_NAME} - Customized Applications")
-    print("=" * 50)
+    print()
+    print(f"Selected cursor theme: {theme}")
+
+    if not automatic_backup():
+        return
+
+    if set_cursor_theme(theme):
+        success(
+            f"Cursor theme changed to: {theme}"
+        )
+        info(
+            "You may need to restart applications "
+            "for the change to appear."
+        )
+    else:
+        error("Cursor theme could not be changed.")
+
+
+def change_icon_interactive():
+    themes = discover_icon_themes()
+
+    theme = choose_theme(
+        themes,
+        "Installed application icon themes"
+    )
+
+    if not theme:
+        return
+
+    print()
+    print(f"Selected icon theme: {theme}")
+
+    if not automatic_backup():
+        return
+
+    if set_icon_theme(theme):
+        success(
+            f"Application icon theme changed to: {theme}"
+        )
+        info(
+            "You may need to restart applications "
+            "for the change to appear."
+        )
+    else:
+        error(
+            "Application icon theme could not be changed."
+        )
+
+
+def change_both_interactive():
+    cursor_themes = discover_cursor_themes()
+
+    cursor = choose_theme(
+        cursor_themes,
+        "Installed cursor themes"
+    )
+
+    if not cursor:
+        return
+
+    icon_themes = discover_icon_themes()
+
+    icons = choose_theme(
+        icon_themes,
+        "Installed application icon themes"
+    )
+
+    if not icons:
+        return
+
+    print()
+    print(f"Selected cursor theme: {cursor}")
+    print(f"Selected icon theme: {icons}")
+
+    if not automatic_backup():
+        return
+
+    cursor_ok = set_cursor_theme(cursor)
+    icon_ok = set_icon_theme(icons)
+
     print()
 
-    for desktop_id, customization in data.items():
-        print(f"{desktop_id}")
-        print(f"  Name:       {customization['application_name']}")
-        print(f"  New icon:   {customization['new_icon']}")
-        print(f"  Backup:     {customization['backup_path']}")
+    if cursor_ok:
+        success(
+            f"Cursor theme changed to: {cursor}"
+        )
+    else:
+        error("Cursor theme could not be changed.")
+
+    if icon_ok:
+        success(
+            f"Application icon theme changed to: {icons}"
+        )
+    else:
+        error(
+            "Application icon theme could not be changed."
+        )
+
+    if cursor_ok or icon_ok:
+        info(
+            "You may need to restart applications "
+            "for changes to appear."
+        )
+
+
+def restore_interactive():
+    list_backups()
+
+    backups = sorted(
+        BACKUP_DIR.glob("*.backup"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True
+    )
+
+    if not backups:
+        return
+
+    print()
+
+    try:
+        choice = input(
+            "Enter backup number or filename "
+            "(0 to cancel): "
+        ).strip()
+
+    except KeyboardInterrupt:
+        print()
+        return
+
+    if choice == "0":
+        return
+
+    restore_backup(choice)
+
+
+def delete_backup_interactive():
+    list_backups()
+
+    print()
+
+    try:
+        selected = input(
+            "Enter backup number or filename "
+            "(0 to cancel): "
+        ).strip()
+
+    except KeyboardInterrupt:
+        print()
+        return
+
+    if selected == "0":
+        return
+
+    path = find_backup(selected)
+
+    if path is None:
+        error("Backup not found.")
+        return
+
+    if not ask_confirmation(
+        f"Delete {path.name}?"
+    ):
+        info("Deletion cancelled.")
+        return
+
+    delete_backup(selected)
+
+
+def menu():
+    while True:
+        banner()
+        show_current()
+
+        print()
+        print(color("Menu", Colors.BOLD))
+        print()
+        print("  1. Change cursor/mouse theme")
+        print("  2. Change application icon theme")
+        print("  3. Change both")
+        print("  4. Restore backup")
+        print("  5. List backups")
+        print("  6. Delete backup")
+        print("  0. Exit")
         print()
 
-    print(FOOTER)
+        try:
+            choice = input("Choose an option: ").strip()
+
+        except KeyboardInterrupt:
+            print()
+            return
+
+        if choice == "1":
+            change_cursor_interactive()
+            pause()
+
+        elif choice == "2":
+            change_icon_interactive()
+            pause()
+
+        elif choice == "3":
+            change_both_interactive()
+            pause()
+
+        elif choice == "4":
+            restore_interactive()
+            pause()
+
+        elif choice == "5":
+            list_backups()
+            pause()
+
+        elif choice == "6":
+            delete_backup_interactive()
+            pause()
+
+        elif choice == "0":
+            print()
+            print(BRAND)
+            print()
+            return
+
+        else:
+            warning("Invalid option.")
+            pause()
 
 
-def main():
+def command_list_themes(theme_type):
+    if theme_type == "cursor":
+        themes = discover_cursor_themes()
+        title = "Installed cursor themes"
+    else:
+        themes = discover_icon_themes()
+        title = "Installed application icon themes"
+
+    print(color(title + ":", Colors.BOLD))
+    print()
+
+    if not themes:
+        print("  None found.")
+        return
+
+    for theme in themes:
+        print(f"  {theme}")
+
+
+def command_set(args):
+    if not args.cursor and not args.icons:
+        error(
+            "Specify --cursor, --icons, or both."
+        )
+        return 1
+
+    if args.cursor:
+        themes = discover_cursor_themes()
+
+        print(
+            color(
+                "Installed cursor themes:",
+                Colors.BOLD
+            )
+        )
+        print()
+
+        if themes:
+            for theme in themes:
+                print(f"  • {theme}")
+        else:
+            print("  No installed cursor themes found.")
+
+        print()
+
+        if not ask_confirmation(
+            f"Set cursor theme to '{args.cursor}'?"
+        ):
+            info("Change cancelled.")
+            return 0
+
+    if args.icons:
+        themes = discover_icon_themes()
+
+        print(
+            color(
+                "Installed application icon themes:",
+                Colors.BOLD
+            )
+        )
+        print()
+
+        if themes:
+            for theme in themes:
+                print(f"  • {theme}")
+        else:
+            print(
+                "  No installed application icon themes found."
+            )
+
+        print()
+
+        if not ask_confirmation(
+            f"Set application icon theme to '{args.icons}'?"
+        ):
+            info("Change cancelled.")
+            return 0
+
+    if not automatic_backup():
+        return 1
+
+    success_count = 0
+
+    if args.cursor:
+        if set_cursor_theme(args.cursor):
+            success(
+                f"Cursor theme set to: {args.cursor}"
+            )
+            success_count += 1
+        else:
+            error(
+                "Cursor theme could not be changed."
+            )
+
+    if args.icons:
+        if set_icon_theme(args.icons):
+            success(
+                f"Application icon theme set to: "
+                f"{args.icons}"
+            )
+            success_count += 1
+        else:
+            error(
+                "Application icon theme could not be changed."
+            )
+
+    if success_count:
+        info(
+            "You may need to restart applications "
+            "for changes to appear."
+        )
+
+    return 0 if success_count else 1
+
+
+def build_parser():
     parser = argparse.ArgumentParser(
-        prog="cozy-ricing",
         description=(
-            "Cozy Ricing - a simple Linux CLI application "
-            "icon customization tool."
-        ),
-        epilog=FOOTER,
+            "Cozy Theme Tool - change Linux cursor and "
+            "application icon themes."
+        )
     )
 
     subparsers = parser.add_subparsers(
-        dest="command",
-        required=True,
-    )
-
-    subparsers.add_parser(
-        "list",
-        help="List installed applications.",
-    )
-
-    subparsers.add_parser(
-        "customized",
-        help="List applications customized by Cozy Ricing.",
+        dest="command"
     )
 
     set_parser = subparsers.add_parser(
         "set",
-        help="Change an application's icon.",
+        help="Change cursor and/or icon theme"
     )
 
     set_parser.add_argument(
-        "desktop_id",
-        help="Application desktop ID, e.g. firefox.desktop",
+        "--cursor",
+        metavar="THEME",
+        help="Set the cursor/mouse theme"
     )
 
     set_parser.add_argument(
-        "icon",
-        help="Path to the new icon image.",
+        "--icons",
+        metavar="THEME",
+        help="Set the application icon theme"
+    )
+
+    subparsers.add_parser(
+        "current",
+        help="Show current theme configuration"
+    )
+
+    themes_parser = subparsers.add_parser(
+        "themes",
+        help="List installed themes"
+    )
+
+    themes_parser.add_argument(
+        "type",
+        choices=["cursor", "icons"],
+        help="Theme type to list"
+    )
+
+    subparsers.add_parser(
+        "backups",
+        help="List .backup files"
     )
 
     restore_parser = subparsers.add_parser(
         "restore",
-        help="Restore an application's original icon.",
+        help="Restore a .backup file"
     )
 
     restore_parser.add_argument(
-        "desktop_id",
-        help="Application desktop ID, e.g. firefox.desktop",
+        "backup",
+        help="Backup filename or number"
     )
 
+    delete_parser = subparsers.add_parser(
+        "delete-backup",
+        help="Delete a backup"
+    )
+
+    delete_parser.add_argument(
+        "backup",
+        help="Backup filename or number"
+    )
+
+    subparsers.add_parser(
+        "menu",
+        help="Open the interactive menu"
+    )
+
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
-    try:
-        if args.command == "list":
-            list_applications()
+    if args.command is None:
+        menu()
+        return 0
 
-        elif args.command == "customized":
-            list_customizations()
+    if args.command == "menu":
+        menu()
+        return 0
 
-        elif args.command == "set":
-            success = set_icon(
-                args.desktop_id,
-                args.icon,
-            )
+    if args.command == "current":
+        banner()
+        show_current()
+        print()
+        return 0
 
-            if not success:
-                sys.exit(1)
+    if args.command == "themes":
+        command_list_themes(args.type)
+        return 0
 
-        elif args.command == "restore":
-            success = restore_icon(
-                args.desktop_id,
-            )
+    if args.command == "backups":
+        list_backups()
+        return 0
 
-            if not success:
-                sys.exit(1)
+    if args.command == "restore":
+        return 0 if restore_backup(args.backup) else 1
 
-    except KeyboardInterrupt:
-        print("\nCancelled.")
-        sys.exit(130)
+    if args.command == "delete-backup":
+        return 0 if delete_backup(args.backup) else 1
 
-    except Exception as error:
-        print(f"Error: {error}")
-        sys.exit(1)
+    if args.command == "set":
+        return command_set(args)
+
+    parser.print_help()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\n\nCancelled.")
+        sys.exit(130)
 # not tested
