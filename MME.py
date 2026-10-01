@@ -93,7 +93,7 @@ def build():
     clear_screen()
 
     print("======================================")
-    print("        Auto Builder for MME")
+    print("        Easier way to use MME (deb only)")
     print("        Made with ❤️ by Cozy")
     print("======================================")
     print()
